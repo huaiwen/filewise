@@ -1,0 +1,21 @@
+.venv/
+.filewise/
+__pycache__/
+*.py[cod]
+*.db
+*.db-*
+*.sqlite*
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+.coverage*
+.env
+.env.*
+*tokens*.json
+.DS_Store
+# Local continuity records are not distributable product documentation.
+task_plan.md
+findings.md
+progress.md

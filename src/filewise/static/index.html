@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Filewise · 知识发布控制台</title>
+  <link rel="stylesheet" href="/console.css"><script src="/console.js" defer></script>
+</head>
+<body>
+<header><div><span class="wordmark">Filewise</span><span class="subtitle">知识发布控制台</span></div><span id="identity">尚未连接</span></header>
+<main>
+  <section class="intro"><p class="eyebrow">EVIDENCE → STATE → RELEASE</p><h1>让每次知识变更有据可查。</h1><p>检查证据、验证依赖，审批并发布可追溯的知识版本。</p></section>
+  <section class="card"><form id="connect-form" class="row"><label class="grow">访问令牌<input id="token" type="password" autocomplete="off" required placeholder="输入本地生成的角色令牌"></label><button type="submit">连接</button><button id="disconnect" type="button" class="secondary">断开</button></form><p class="hint">令牌仅保留在当前页面内存。使用不同身份完成编辑、审批和发布。</p></section>
+  <p id="status" role="status" aria-live="polite">输入令牌以加载知识范围与发布记录。</p>
+  <div class="grid">
+    <section class="card"><div class="section-heading"><h2>知识范围</h2><button id="refresh" class="secondary" type="button">刷新</button></div><label>当前范围<select id="scope"><option value="">请先连接</option></select></label><p id="scope-info" class="hint">范围规定必需对象与回归检查。</p>
+      <form id="build-form"><label>业务有效时间<input id="valid-time" type="datetime-local" required></label><div class="row"><button id="resolve" type="button" class="secondary">判定状态</button><button data-role="editor" type="submit" disabled>构建发布候选</button></div></form>
+      <h3>证据来源</h3><ul id="sources" class="source-list"></ul>
+      <form id="upload-form"><label>导入文件<input id="file" type="file" accept=".txt,.md,.csv,.pdf,.docx,.xlsx,.pptx" required></label><label>可见角色（逗号分隔）<input id="source-acl" value="reader,editor,reviewer,publisher" required></label><button data-role="editor" type="submit" disabled>导入并查看原文坐标</button></form>
+    </section>
+    <section class="card"><h2>发布记录</h2><label>发布候选<select id="release"><option value="">暂无记录</option></select></label><p id="release-info" class="hint">选择记录查看变更、影响路径与验证结果。</p><div class="row wrap"><button id="inspect" class="secondary">查看发布包</button><button id="verify" class="secondary">重新验证</button><button id="approve" data-role="reviewer" disabled>审批</button><button id="activate" data-role="publisher" disabled>激活</button><button id="rollback" data-role="publisher" class="secondary" disabled>回滚到此版本</button><button id="revoke" data-role="publisher" class="danger" disabled>撤销</button></div>
+      <form id="context-form"><h3>固定版本读取</h3><label>对象 ID（逗号分隔）<input id="object-ids" placeholder="procedure" required></label><button class="secondary">读取对象及其依赖</button></form>
+    </section>
+  </div>
+  <section class="card"><h2>计算结果</h2><p class="hint">BLOCKED 阻止发布；PASS 仍需独立审批。回滚后，已固定的版本继续可读，直至撤销或证据失效。</p><pre id="result" tabindex="0" aria-label="计算结果">连接后选择发布记录。</pre></section>
+  <details class="card"><summary>编辑范围与业务对象</summary><p class="hint">文件导入只生成证据。提交带原文坐标的业务对象，再由审核身份批准。</p><form id="json-form"><label>提交类型<select id="json-kind"><option value="scopes">创建范围契约</option><option value="revisions">提交对象修订</option></select></label><label>JSON 数据<textarea id="json-input" rows="12" required spellcheck="false" placeholder='{"id":"my-scope","title":"示例范围","required_objects":["rule"],"checks":[]}'></textarea></label><button data-role="editor" disabled>提交</button></form><form id="decision-form" class="row wrap"><label class="grow">修订 ID<input id="revision-id" required></label><label>审核决定<select id="decision"><option value="approved">批准</option><option value="revoked">撤销</option></select></label><button data-role="reviewer" disabled>记录决定</button></form></details>
+  <footer>Filewise 0.1.0 · 本地单租户预览版 · 确定性校验 · 只读知识上下文</footer>
+</main>
+</body></html>

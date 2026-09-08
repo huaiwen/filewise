@@ -1,0 +1,10 @@
+{
+  "id": "inspection",
+  "title": "合成检验规程",
+  "description": "仅覆盖规则及操作程序的压力一致性；所有数值为合成演示。",
+  "required_objects": ["rule", "procedure"],
+  "checks": [
+    {"id": "pressure-consistency", "object_id": "procedure", "field": "pressure_kpa", "op": "eq", "reference_object": "rule", "reference_field": "pressure_kpa"},
+    {"id": "positive-pressure", "object_id": "rule", "field": "pressure_kpa", "op": "gte", "expected": 1}
+  ]
+}
