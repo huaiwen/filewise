@@ -29,6 +29,18 @@ from .models import (
     SourcePolicy,
 )
 from .projects import CommitRequest, Projects, ProjectSpec, relative_path
+from .workspace import (
+    CompileQuery,
+    DiffQuery,
+    ImpactQuery,
+    ReadQuery,
+    ResolveQuery,
+    SearchQuery,
+    VerifyQuery,
+    VersionQuery,
+    Workspace,
+    WriteQuery,
+)
 
 
 def load_tokens(path):
@@ -48,10 +60,10 @@ def validate_tokens(tokens):
         ):
             raise ValueError("Tokens must be at least 32 ASCII characters without whitespace")
         actor = Actor.model_validate(actor)
-        if actor.id in identities and identities[actor.id] != (actor.roles, actor.audience):
+        if actor.id in identities and identities[actor.id] != actor:
             raise ValueError("Each actor ID must have one consistent role set")
         result[token] = actor
-        identities[actor.id] = (actor.roles, actor.audience)
+        identities[actor.id] = actor
     return result
 
 
@@ -101,9 +113,10 @@ class Boundary:
                 {"detail": "Valid bearer token required"}, 401, headers={"WWW-Authenticate": "Bearer"}
             )(scope, receive, secured_send)
         scope.setdefault("state", {})["actor"] = actor
-        # Agent credentials cannot reach draft evidence through the operator/kernel APIs.
+        # Workspace authoring is an explicit project grant; legacy tokens stay released-only.
         if actor.audience == "agent" and not (
-            (scope["method"] == "GET" and scope["path"] in ("/api/me", "/api/projects"))
+            (bool(actor.workspace_projects) and scope["path"].startswith("/api/workspaces/"))
+            or (scope["method"] == "GET" and scope["path"] in ("/api/me", "/api/projects"))
             or (scope["method"] == "POST" and re.fullmatch(r"/api/projects/[^/]+/sessions", scope["path"]))
             or (
                 scope["method"] == "GET"
@@ -113,14 +126,19 @@ class Boundary:
             return await JSONResponse(
                 {"detail": "Agent credentials may only use the released file gateway"}, 403
             )(scope, receive, secured_send)
+        limit = (
+            70 * 1024 * 1024
+            if scope["path"].startswith("/api/workspaces/") and scope["path"].endswith("/write")
+            else MAX_BYTES + 1024 * 1024
+        )
         body = bytearray()
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
                 return
             chunk = message.get("body", b"")
-            if len(body) + len(chunk) > MAX_BYTES + 1024 * 1024:
-                return await JSONResponse({"detail": "Request exceeds 11 MiB"}, 413)(
+            if len(body) + len(chunk) > limit:
+                return await JSONResponse({"detail": "Request exceeds size limit"}, 413)(
                     scope, receive, secured_send
                 )
             body.extend(chunk)
@@ -145,6 +163,7 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
     projects = Projects(engine)
     middleware = Middleware(projects)
     connections = Connections(middleware)
+    workspace = Workspace(middleware)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -239,6 +258,62 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
         middleware.configure(project_id, WatchConfig(), who)
         return projects.detail(project["id"], who)
 
+    @app.post("/api/workspaces/{project_id}/sync")
+    def workspace_sync(project_id: str, who=Depends(actor)):
+        return workspace.sync(project_id, who)
+
+    @app.get("/api/workspaces/{project_id}/versions")
+    def workspace_versions(project_id: str, who=Depends(actor)):
+        return workspace.versions(project_id, who)
+
+    @app.post("/api/workspaces/{project_id}/ls")
+    def workspace_ls(project_id: str, data: VersionQuery, who=Depends(actor)):
+        return workspace.ls(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/read")
+    def workspace_read(project_id: str, data: ReadQuery, who=Depends(actor)):
+        return workspace.read(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/search")
+    def workspace_search(project_id: str, data: SearchQuery, who=Depends(actor)):
+        return workspace.search(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/write")
+    def workspace_write(project_id: str, data: WriteQuery, who=Depends(actor)):
+        return workspace.write(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/resolve")
+    def workspace_resolve(project_id: str, data: ResolveQuery, who=Depends(actor)):
+        return workspace.resolve(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/diff")
+    def workspace_diff(project_id: str, data: DiffQuery, who=Depends(actor)):
+        return workspace.diff(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/impact")
+    def workspace_impact(project_id: str, data: ImpactQuery, who=Depends(actor)):
+        return workspace.impact(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/compile")
+    def workspace_compile(project_id: str, data: CompileQuery, who=Depends(actor)):
+        return workspace.compile(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/verify")
+    def workspace_verify(project_id: str, data: VerifyQuery, who=Depends(actor)):
+        return workspace.verify(project_id, data, who)
+
+    @app.post("/api/workspaces/{project_id}/recover")
+    def workspace_recover(project_id: str, data: VersionQuery, who=Depends(actor)):
+        return workspace.recover(project_id, data.version, who)
+
+    @app.post("/api/workspaces/{project_id}/trace")
+    def workspace_trace(project_id: str, data: VersionQuery, who=Depends(actor)):
+        return workspace.trace(project_id, data.version, who)
+
+    @app.get("/api/workspaces/{project_id}/evidence/{source_id}")
+    def workspace_evidence(project_id: str, source_id: str, locator: str | None = None, who=Depends(actor)):
+        return workspace.evidence(project_id, source_id, who, locator)
+
     @app.get("/api/projects/{project_id}/connections")
     def connection_status(project_id: str, who=Depends(actor)):
         return connections.status(project_id, who)
@@ -292,7 +367,7 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
 
     @app.post("/api/projects/{project_id}/sync", status_code=201)
     def sync_project(project_id: str, who=Depends(actor)):
-        return projects.snapshot(project_id, who)
+        return workspace.sync(project_id, who)
 
     @app.post("/api/projects/{project_id}/upload", status_code=201)
     def upload_project(project_id: str, files: list[UploadFile], who=Depends(actor)):
@@ -303,7 +378,9 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
             if name in data:
                 raise FilewiseError("Duplicate uploaded path")
             data[name] = file.file.read(MAX_BYTES + 1)
-        return projects.snapshot(project_id, who, data)
+        with middleware.lock(project_id):
+            middleware.require_recovered(project_id)
+            return projects.snapshot(project_id, who, data)
 
     @app.get("/api/projects/{project_id}/snapshots/{release_id}")
     def project_snapshot(project_id: str, release_id: str, who=Depends(actor)):

@@ -28,6 +28,13 @@ class Actor(Model):
     id: ID
     roles: set[Role] = Field(min_length=1)
     audience: Literal["operator", "agent"] = "operator"
+    workspace_projects: set[ID] = Field(default_factory=set, max_length=100)
+
+    @model_validator(mode="after")
+    def agent_permissions(self):
+        if self.audience == "agent" and self.roles & {"reviewer", "publisher"}:
+            raise ValueError("Agent identities cannot approve or publish")
+        return self
 
 
 class Evidence(Model):
@@ -79,7 +86,7 @@ class Revision(Model):
     object_id: ID
     kind: Literal["rule", "procedure", "asset", "test", "skill", "record"]
     title: str = Field(min_length=1, max_length=256)
-    fields: dict[str, JsonValue] = Field(min_length=1, max_length=100)
+    fields: dict[str, JsonValue] = Field(min_length=1, max_length=256)
     depends_on: list[ID] = Field(default_factory=list, max_length=1000)
     evidence: list[Evidence] = Field(min_length=1, max_length=100)
     valid_from: str

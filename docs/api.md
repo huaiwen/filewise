@@ -40,6 +40,57 @@ HTTP 201 表示成功创建/幂等提交来源、范围、修订或构建。**BL
 
 401 为未认证，403 为角色/证据权限不足，404 为不存在，409 为门禁或并发冲突，413 为体积超限，415 为格式或依赖不支持，422 为输入/解析失败，400 为其他领域拒绝。错误不授权客户端降级为无检查路径。
 
+## Agent 原生知识工作区
+
+`/api/workspaces/{project_id}` 为原生读写与计算接口。Agent 凭据必须有 `workspace_projects` 项目授权；写/删/同步/恢复另须 `editor`，读取与计算可用项目专用 reader。无此授权的旧 Agent 令牌仍只能用发布会话。任何 Agent 身份都不能含 reviewer/publisher 角色。
+
+除 `versions` 和 `evidence` 用 GET 外，下表均 POST JSON；成功返回200。省略 `version` 时为 `latest`，还支持 `published`、`HEAD`、snapshot ID、commit ID。latest 排除未完成写回及 dry-run 候选；明确版本可读候选，撤销与当前来源权限始终生效。
+
+| 子路径 | 请求 | 返回 |
+| --- | --- | --- |
+| `versions` | GET | 快照、写入说明/状态、命名提交与发布指针 |
+| `ls` | `{ "version":"latest" }` | 具体版本、文件 manifest、metadata、构建检查 |
+| `read` | `path`、可选 version/include_bytes | 文本、坐标、metadata、哈希与 receipt；仅 include_bytes=true 返回原件 Base64 |
+| `search` | query、可选 version/paths/limit | 服务端字面命中，最多100条，来源/坐标/哈希 |
+| `write` | WriteQuery，见下 | 新版本、saved/status、逐文件变化、verification、写入 metadata/receipt；不发布 |
+| `sync` | 无 | 捕获已注册目录中的外部保存；不修改原文件 |
+| `resolve` | version/paths；或 valid_time + 可选 transaction_time | 固定版本状态；时间模式为已审核修订双时间解析 |
+| `diff` | before、可选 after/paths | 服务端位置化与类型化差分、metadata 变化、统计和影响 |
+| `impact` | version、paths、base_version、direction | 前后依赖图上的传播路径与缺失边界 |
+| `compile` | goal、version/paths/base_version/direction、max_chars、output_checks | task_id、固定版本上下文、证据、回归与输出断言、工具及审批契约 |
+| `verify` | phase、version/task_id、operation、paths；postflight 可加 result/outputs/citations/output_version | decision、实际断言、阻断原因、receipt；production_authorized=false |
+| `evidence/{source_id}` | GET，可选 locator | 同项目当前可见的原始证据片段 |
+| `trace` | version | 版本基线、写入 provenance、相关审计（最多200条） |
+| `recover` | `{ "version":"CONCRETE_WRITE_VERSION" }` | 恢复此身份自己的中断工作写入，之后可用原幂等请求重试 |
+
+WriteQuery 示例（changes 是局部操作集，不是完整上传集）：
+
+```json
+{
+  "base_version":"CONCRETE_VERSION_FROM_READ",
+  "request_id":"change-001",
+  "message":"更新要求",
+  "task":"pressure-review",
+  "model":"model-name",
+  "changes":{
+    "requirement.json":{"text":"{\"pressure_kpa\":120}","meta":{"facts":{"pressure_kpa":120}}},
+    "old.md":{"delete":true}
+  },
+  "dry_run":false,
+  "require_pass":false
+}
+```
+
+每个 change 选择 text/base64/delete 之一，或仅 meta。meta 为 FileMetadata：summary、tags、entities、depends_on、facts、evidence、owner、authority、valid_from/valid_until。服务端绑定声明身份与内容 SHA，不能从输入注入；提供 meta 整份替换，省略时继承。事实、依赖和元数据进入不可变版本与差分。单 metadata 最大64,000字节，facts JSON 最多16,000字符。
+
+写入正文上限70 MiB（允许50 MiB文件集的 Base64 编码）；仍限制1,000文件、10 MiB/文件、50 MiB总原件。路径严格限制于注册项目关注范围。基线或幂等冲突409；既有文件外部漂移不覆盖；完成工作保存不触发生产指针变化。
+
+**HTTP 成功不是业务 PASS。** 默认即使构建 BLOCKED 也保存工作版本供继续修复。require_pass=true 则返回 saved=false/status=blocked；dry_run 保留候选。重复同一 request_id+请求返回原版本，不同请求409。服务端 actor 有身份保证；model/task/tool 仅为调用者声明。
+
+`verify` 的 phase 为 build/preflight/postflight。output_checks 只检查 object_id=result，不允许外部 reference；outputs 为路径→SHA256，citations 为 Evidence 数组。写操作 postflight 必须证明有本身份从输入基线完成的 Filewise 写入。编译上下文截断、过期或旧内容的声明事实、证据失效、任务/路径越权、输出不符会阻断。max_chars 限制序列化 context，最大50,000；任务和回归契约另列。查询时间模式仅解析审核事实，不改变访问权限。
+
+完整 CLI、机器断言示例与恢复语义见 [Agent 使用说明](agent.md)。
+
 ## 固定版本消费
 
 ```bash
@@ -54,7 +105,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## 项目文件网关
 
-普通操作员凭据具有 reader/editor/reviewer/publisher 角色。Agent 身份额外固定 `audience: "agent"`，只允许下表注明的入口以及 `GET /api/me`；不能访问其余内核端点以绕过草稿门禁。
+普通操作员凭据具有 reader/editor/reviewer/publisher 角色。Agent 身份额外固定 `audience: "agent"`，只允许下表注明的会话入口、`GET /api/me`，以及上面明确授权的工作区入口；不能访问其余内核端点。
 
 | 方法与路径 | 内容 / 权限 |
 | --- | --- |
@@ -76,7 +127,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `GET /api/sessions/{session}/read?path=...` | Agent 可用；每次重验资格，返回 text、fragments、原件 base64、receipt |
 | `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定版本片段的字面查询，最多 100 条结果，含来源哈希与位置 |
 
-提交返回 id、project_id、release_id、parent_id、message、author、created_at。`expected_parent` 必须显式传入，且等于当前最新提交的 id；历史变化或内容与父提交一致返回 409，空说明返回 422。提交不扫描目录、不批准、不激活、不写回原件。`compare` 重算 changes 和 impact；verification 仍是目标快照的构建检查，原始审核报告不变。提交和比较均不向 Agent 凭据开放。
+提交返回 id、project_id、release_id、parent_id、message、author、created_at。`expected_parent` 必须显式传入，且等于当前最新提交的 id；历史变化或内容与父提交一致返回 409，空说明返回 422。提交不扫描目录、不批准、不激活、不写回原件。`compare` 重算 changes 和 impact；verification 仍是目标快照的构建检查，原始审核报告不变。操作员提交和 compare 入口不向 Agent 凭据开放；工作区 Agent 用 `/diff` 比较并用 `/versions` 读取提交历史。
 
 `restore` 返回新的快照，`report.restore_from` 是历史来源，`report.base_release` 是本次保存的实时原件基线，`report.changes` 是将要写入的完整文件集差异。候选保留现有审批/发布流程，可另行记录提交；201 不代表已恢复原件或业务检查通过。目标与原件相同时、目标撤销时或存在中断写回时返回 409；来源无权访问返回 403，上传项目返回 400。写回时再次核对来源与当前原件，后续外部修改不被覆盖。观察开关不限制人工恢复。
 

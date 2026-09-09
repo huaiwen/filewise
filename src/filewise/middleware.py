@@ -18,7 +18,7 @@ from pydantic import Field
 from .agent import sandbox_command
 from .engine import FilewiseError, canonical, require
 from .models import Actor, Model, now
-from .projects import DEFAULT_EXCLUDES, ProjectSpec, relative_path, scan
+from .projects import DEFAULT_EXCLUDES, FileMetadata, ProjectSpec, relative_path, scan
 
 MONITOR = Actor(id="filewise-monitor", roles={"editor"})
 GUARD = Actor(id="filewise-guard", roles={"editor"})
@@ -260,19 +260,56 @@ class Middleware:
                     raise FilewiseError("Cannot restore a revoked snapshot", 409)
                 bodies = self._bodies(db, manifest.values())
                 files = {p: bodies[f["sha256"]] for p, f in manifest.items()}
+                latest = self.projects._latest(db, project_id)
+                current = json.loads(latest["manifest"]) if latest else {}
+
+            def declarations(items):
+                return {
+                    p: {k: v for k, v in f["metadata"].items() if k in FileMetadata.model_fields}
+                    if f.get("metadata")
+                    else None
+                    for p, f in items.items()
+                }
+
+            metadata = declarations(manifest)
             spec = ProjectSpec.model_validate_json(project["spec"])
             originals, _ = scan(project["root"], DEFAULT_EXCLUDES + spec.excludes, spec.includes)
-            if hashes(originals) == hashes(files):
+            if hashes(originals) == hashes(files) and declarations(current) == metadata:
                 raise FilewiseError("Original files already match this snapshot; nothing to restore", 409)
             baseline = self.projects.snapshot(project_id, RESTORER, originals, captured=True)
             return self.capture(
-                project_id, baseline["release_id"], files, RESTORER, writer=actor.id, restore_from=release_id
+                project_id,
+                baseline["release_id"],
+                files,
+                RESTORER,
+                writer=actor.id,
+                restore_from=release_id,
+                metadata=metadata,
             )
 
-    def capture(self, project_id, baseline, files, actor, *, writer=None, restore_from=None):
+    def capture(
+        self,
+        project_id,
+        baseline,
+        files,
+        actor,
+        *,
+        writer=None,
+        restore_from=None,
+        metadata=None,
+        write_meta=None,
+    ):
         """Caller holds the project lock; snapshots and approval use the existing file kernel."""
         snapshot = self.projects.snapshot(
-            project_id, actor, files, base_release=baseline, captured=True, restore_from=restore_from
+            project_id,
+            actor,
+            files,
+            base_release=baseline,
+            captured=True,
+            restore_from=restore_from,
+            metadata=metadata,
+            write_meta=write_meta,
+            pending_write=True,
         )
         with self.engine.connect(True) as db:
             project = self.projects._project(db, project_id, actor)
@@ -280,6 +317,24 @@ class Middleware:
                 "INSERT INTO writebacks VALUES(?,?,?,?,NULL,?)",
                 (snapshot["release_id"], project_id, baseline, "pending", now()),
             )
+            if write_meta:
+                db.execute(
+                    "INSERT INTO workspace_operations VALUES(?,?,?,?,?)",
+                    (
+                        project_id,
+                        actor.id,
+                        write_meta["request_id"],
+                        write_meta["request_digest"],
+                        snapshot["release_id"],
+                    ),
+                )
+                self.engine._audit(
+                    db,
+                    project["scope_id"],
+                    actor,
+                    "workspace.write_requested",
+                    {"version": snapshot["release_id"], **write_meta},
+                )
             event = {
                 "kind": "restore" if restore_from else "before_write",
                 "release_id": snapshot["release_id"],
@@ -335,24 +390,43 @@ class Middleware:
         with self.engine.connect(True) as db:
             db.execute("UPDATE writebacks SET status='applied',error=NULL WHERE release_id=?", (release_id,))
             db.execute("UPDATE watches SET baseline=? WHERE project_id=?", (release_id, project["id"]))
+            if action == "workspace.saved":
+                event = {
+                    "kind": "after_write",
+                    "release_id": release_id,
+                    "writer": actor.id,
+                    "recorded_at": now(),
+                    "original_files_changed": bool(project["root"]),
+                    "published": False,
+                }
+                db.execute(
+                    "UPDATE watches SET last_event=? WHERE project_id=?", (canonical(event), project["id"])
+                )
             self.engine._audit(db, project["scope_id"], actor, action, {"release_id": release_id})
 
     def apply(self, project_id, release_id, expected_active, actor):
-        require(actor, "publisher")
         with self.lock(project_id):
-            project, release, bundle, proposal, before, after, bodies = self._versions(
-                project_id, release_id, actor
-            )
-            self.require_recovered(project_id)
-            if proposal["status"] == "applied":
-                return {"status": "applied", "release_id": release_id}
-            if proposal["status"] != "pending":
-                raise FilewiseError("Recover the interrupted writeback before retrying", 409)
-            with self.engine.connect() as db:
-                if proposal["restore_from"]:
-                    target = self.projects._snapshot(db, project_id, proposal["restore_from"], actor)[2]
-                    if target["revoked"]:
-                        raise FilewiseError("Cannot restore a revoked snapshot", 409)
+            return self._apply(project_id, release_id, expected_active, actor)
+
+    def _apply(self, project_id, release_id, expected_active, actor, *, publish=True):
+        """Caller holds the project lock. Draft saving never approves or activates knowledge."""
+        require(actor, "publisher" if publish else "editor")
+        project, release, bundle, proposal, before, after, bodies = self._versions(
+            project_id, release_id, actor
+        )
+        self.require_recovered(project_id)
+        if proposal["status"] == "applied":
+            return {"status": "applied", "release_id": release_id}
+        if proposal["status"] != "pending":
+            raise FilewiseError("Recover the interrupted writeback before retrying", 409)
+        if release["revoked"]:
+            raise FilewiseError("Cannot write a revoked version", 409)
+        with self.engine.connect() as db:
+            if proposal["restore_from"]:
+                target = self.projects._snapshot(db, project_id, proposal["restore_from"], actor)[2]
+                if target["revoked"]:
+                    raise FilewiseError("Cannot restore a revoked snapshot", 409)
+            if publish:
                 if not release["approver"] or self.engine._runtime_issues(db, release, bundle, actor):
                     raise FilewiseError("Writeback requires passing checks and independent approval", 409)
                 active = db.execute(
@@ -360,38 +434,44 @@ class Middleware:
                 ).fetchone()
                 if (active[0] if active else None) != expected_active:
                     raise FilewiseError("Active release changed; refresh before writeback", 409)
-            self.projects._live(project, before)
-            # Durable intent precedes filesystem writes. Original bytes already exist in immutable sources.
-            self._status(release_id, "applying")
-            try:
+        self.projects._live(project, before)
+        # Durable intent precedes filesystem writes. Original bytes already exist in immutable sources.
+        self._status(release_id, "applying")
+        try:
+            if project["root"]:
                 for path in sorted(before.keys() | after.keys()):
                     old, new = before.get(path, {}).get("sha256"), after.get(path, {}).get("sha256")
                     if old != new:
                         replace_bytes(project["root"], path, bodies.get(new), old)
                 self.projects._live(project, after)
-                result = self.engine.activate(release_id, expected_active, actor)
-                self._applied(project, release_id, actor, "guard.applied")
-                return {**result, "status": "applied"}
-            except Exception as exc:
-                with self.engine.connect() as db:
-                    activated = db.execute(
-                        "SELECT 1 FROM activations WHERE release_id=?", (release_id,)
-                    ).fetchone()
-                if activated:
-                    self._status(release_id, "recovery_required", str(exc)[:1000])
-                    raise FilewiseError(
-                        "Activation was recorded; recover to reconcile writeback status", 409
-                    ) from exc
-                try:
+            result = (
+                self.engine.activate(release_id, expected_active, actor)
+                if publish
+                else {"release_id": release_id}
+            )
+            self._applied(project, release_id, actor, "guard.applied" if publish else "workspace.saved")
+            return {**result, "status": "applied"}
+        except Exception as exc:
+            with self.engine.connect() as db:
+                activated = db.execute(
+                    "SELECT 1 FROM activations WHERE release_id=?", (release_id,)
+                ).fetchone()
+            if activated:
+                self._status(release_id, "recovery_required", str(exc)[:1000])
+                raise FilewiseError(
+                    "Activation was recorded; recover to reconcile writeback status", 409
+                ) from exc
+            try:
+                if project["root"]:
                     self._restore(project, before, after, bodies)
-                    self._status(release_id, "pending", str(exc)[:1000])
-                except Exception as restore_error:
-                    self._status(release_id, "recovery_required", str(restore_error)[:1000])
-                    raise FilewiseError(
-                        "RECOVERY_REQUIRED: originals were not overwritten further; inspect writeback recovery",
-                        409,
-                    ) from exc
-                raise
+                self._status(release_id, "pending", str(exc)[:1000])
+            except Exception as restore_error:
+                self._status(release_id, "recovery_required", str(restore_error)[:1000])
+                raise FilewiseError(
+                    "RECOVERY_REQUIRED: originals were not overwritten further; inspect writeback recovery",
+                    409,
+                ) from exc
+            raise
 
     def _restore(self, project, before, after, bodies):
         spec = ProjectSpec.model_validate_json(project["spec"])
@@ -414,8 +494,8 @@ class Middleware:
             if current.get(path) != old:
                 replace_bytes(project["root"], path, bodies.get(old), current.get(path))
 
-    def recover(self, project_id, release_id, actor):
-        require(actor, "publisher")
+    def recover(self, project_id, release_id, actor, *, draft=False):
+        require(actor, "editor" if draft else "publisher")
         with self.lock(project_id):
             project, _, _, proposal, before, after, bodies = self._versions(project_id, release_id, actor)
             if proposal["status"] not in ("applying", "recovery_required"):
@@ -428,7 +508,8 @@ class Middleware:
                 self.projects._live(project, after)
                 self._applied(project, release_id, actor, "guard.recovered_after_activation")
                 return {"status": "applied"}
-            self._restore(project, before, after, bodies)
+            if project["root"]:
+                self._restore(project, before, after, bodies)
             self._status(release_id, "pending")
             with self.engine.connect(True) as db:
                 self.engine._audit(

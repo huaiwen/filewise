@@ -216,7 +216,8 @@ function renderChanges(content,report=state.comparison||state.snapshot.report,in
   for(const change of changes){const block=el('article',undefined,'change-file'),header=el('div',undefined,'change-header');const name=el('button',change.path);name.type='button';name.disabled=!interactive||change.kind==='removed';name.addEventListener('click',run(async()=>{state.view='files';await loadFile(change.path);}));header.append(name,badge({added:'新增',modified:'修改',removed:'删除'}[change.kind]));block.append(header);
     for(const c of change.locations.slice(0,100)){const location=el('div',undefined,'change-location');if(c.before!==null)location.append(el('div','− '+c.before_locator+'  '+c.before,'diff-line before'));if(c.after!==null)location.append(el('div','+ '+c.after_locator+'  '+c.after,'diff-line after'));block.append(location,el('p',c.summary+' · '+(state.snapshot.approver?'已由 '+state.snapshot.approver+' 审核':'待审核'),'change-meaning'));}
     if(change.binary_changed)block.append(el('p','原文件字节发生变化，暂无可定位的文本差分。','small muted'));
-    else if(!change.locations.length)block.append(el('p','原文件字节发生变化，但提取内容一致。变化可能来自格式或文档元数据，需检查原文件。','small muted'));
+    else if(!change.locations.length&&change.before_hash!==change.after_hash)block.append(el('p','原文件字节发生变化，但提取内容一致。变化可能来自格式或文档元数据，需检查原文件。','small muted'));
+    if(JSON.stringify(change.metadata_before)!==JSON.stringify(change.metadata_after)){block.append(el('p','知识 metadata 发生变化（声明信息不等于已审核事实）。','small muted'),el('pre',JSON.stringify({before:change.metadata_before,after:change.metadata_after},null,2),'small'));}
     if(change.locations.length>100)block.append(el('p','界面显示前 100 处变化，API 提供完整报告。','fine'));content.append(block);
   }
 }

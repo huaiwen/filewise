@@ -1,10 +1,36 @@
 # Filewise
 
-**位于 Agent、人员与真实文件之间的知识版本与发布层。** 文件变化后，定位改动、检查依赖影响、验证业务约束，经独立审核发布，再按固定版本提供给 Agent。
+**供 Agent 和人员直接使用的文件知识计算与版本层。** Agent 调用 Filewise 完成读写与 metadata 提交，直接查询历史、差分、影响，并编译和验证任务上下文。普通工作保存与独立审核后的生产发布分开。
 
 本地单租户实现：Python 3.11+、SQLite、FastAPI、浏览器文件工作台与认证 CLI。无需模型、向量库、Node 服务或外部账号；演示和测试全部使用合成资料。
 
-## 开始使用
+## Agent 原生用法
+
+由操作员注册项目并执行 `filewise auth-agent PROJECT_ID`，将返回的项目专用令牌注入 Agent 环境，重启服务后即可直接调用：
+
+```bash
+filewise agent ls PROJECT_ID
+filewise agent read PROJECT_ID requirement.json
+filewise agent write PROJECT_ID requirement.json --base VERSION_FROM_LS \
+  --request-id pressure-001 --content '{"pressure_kpa":120}' \
+  --meta '{"summary":"调整压力","facts":{"pressure_kpa":120}}' -m "更新要求"
+filewise agent read PROJECT_ID requirement.json --version HISTORICAL_VERSION
+filewise agent diff PROJECT_ID OLD_VERSION NEW_VERSION
+filewise agent impact PROJECT_ID --path requirement.json
+filewise agent compile PROJECT_ID --path requirement.json --goal "核对相关要求"
+filewise agent verify PROJECT_ID --phase preflight --task-id TASK_ID
+```
+
+**Filewise 自己保存原件与版本，不依赖先改文件再通知监听器。** 支持批量增删改、二进制原字节、metadata-only、CAS、幂等、dry-run 和失败恢复。`--require-pass` 可要求检查通过才保存；普通保存不自动批准或发布。生产只读会话、保存后观察和原生审核副本仍作为独立模式保留。
+
+完整授权、命令、版本选择及三阶段验证见 [Agent 使用说明](docs/agent.md)。可直接运行合成端到端检查：
+
+```bash
+uv sync --locked --all-extras --no-editable
+uv run --no-sync python examples/check_workspace.py
+```
+
+## 人员工作台与可选原生连接
 
 在本仓库执行：
 
@@ -23,7 +49,7 @@ uv run --no-sync filewise start
 
 完成一轮修改后，在“变更”中查看累计差异，点击 **记录一次提交**，填写说明，再到 **提交历史** 回看。这一步保存版本与说明，不要求先审核；审核和写回仍可随后单独进行。首次使用可先把初始文件集记为第一条提交。
 
-**写入前处理需要接入 Agent。** 配置由 Filewise 的“连接”按钮完成，不需要手写 JSON；仅选择关注文件夹只能保证保存后的观察。已经打开的任务需重新加载项目配置。侧栏“Agent 连接”可查看状态、自检和断开，不会把“配置已安装”显示成“已接入”。
+**原生工具的审核副本模式需要连接 Agent；上面的原生 CLI 不需要。** 配置由 Filewise 的“连接”按钮完成，不需要手写 JSON；仅选择关注文件夹只能保证保存后的观察。已经打开的任务需重新加载项目配置。侧栏“Agent 连接”可查看状态、自检和断开，不会把“配置已安装”显示成“已接入”。
 
 当前原生受控连接支持 **macOS**，覆盖原生文件工具与前台 Shell。外部 MCP、后台进程、独立终端不经过这层钩子。Codex/Claude Code 已验证协议与实际钩子命令，Pi 另验证了安装版本的扩展运行时；未调用云模型。详细范围见 [接入与中间件说明](docs/middleware.md)。
 
@@ -60,7 +86,7 @@ uv run --no-sync filewise follow "/absolute/path/to/资料" --include '*.xlsx' -
 
 `follow` 的状态保存在被关注目录的 `.filewise/`；重启使用 `filewise follow 同一目录`。终端给出网页和凭据，网页仍提供“Agent 连接”。普通使用优先采用上面的 `start` 向导。一次性受控 CLI 任务 `filewise run` 的操作见 [中间件说明](docs/middleware.md)。
 
-首次配置时可再传 `--spec examples/project-contract.json` 声明文件依赖与业务约束，例如 Excel B2 必须等于 JSON 中的压力值。省略时 PASS 只表示文件集完整性，业务适用性仍需人工审核。范围、依赖和约束在创建时固定；`local-owner` 是人工操作身份，自动观察/受控候选由不同系统身份提交。
+首次配置时可再传 `--spec examples/project-contract.json` 声明文件依赖与业务约束，例如 Excel B2 必须等于 JSON 中的压力值。省略时 PASS 只表示文件集完整性，业务适用性仍需人工审核。项目范围与契约约束在创建时固定，文件可通过版本化 metadata 补充依赖；`local-owner` 是人工操作身份，自动观察/受控候选由不同系统身份提交。
 
 高级的多项目、上传和分角色流程仍可用：
 
@@ -76,7 +102,7 @@ uv run --no-sync filewise serve --tokens .filewise/tokens.json
 Agent 接口不读取本地数据库。下面假设安装后的 `filewise` 已在 PATH 中；在仓库内可用 `uv run --no-sync filewise` 代替：
 
 ```bash
-# FILEWISE_TOKEN 由管理员以环境变量提供，使用 audience=agent 的凭据
+# 兼容的生产只读模式：使用未授予 workspace_projects 的 audience=agent 凭据
 export FILEWISE_URL=http://127.0.0.1:8000
 filewise agent open inspection
 filewise agent ls SESSION_ID
@@ -185,8 +211,8 @@ uv run --no-sync filewise --actor local-reader --roles reader context RELEASE_ID
 | `resolve` | 按业务有效时间和记录时间解析已审核修订；相同权威级别取较新的生效时间，同级同时间冲突明确拒绝 |
 | `diff` | 比较类型化字段、阈值、依赖、ACL、权威和证据；不声称理解任意自然语言差异 |
 | `impact` | 声明依赖上的双向、环安全遍历；构建时合并旧/新依赖，返回路径及缺失边界 |
-| `compile` | `build` 中生成受影响对象的审核任务和完整范围回归集；只读，工具权限为空 |
-| `verify` | 确定性断言、来源坐标、哈希、完整性及实时权限检查；没有领域检查为 NEEDS_REVIEW |
+| `compile` | 工作区按目标路径生成有界、版本固定的依赖上下文、回归任务、输出断言和工具/审批契约；内核 build 保留审核任务与全范围回归 |
+| `verify` | 构建、执行前、执行后分别核对声明断言、来源、任务权限、基线与输出；没有可检查输出时 NEEDS_REVIEW，结果不自动授权生产 |
 | 发布 | 内容寻址、不可变发布包；不同身份审批、原子激活、回滚及永久撤销 |
 | 消费 | 显式 `release_id`，读取对象及其依赖闭包；每次重新核对来源策略和撤销状态 |
 
@@ -208,7 +234,7 @@ print(engine.overview(reader))
 # print(engine.context(release_id, ["procedure"], reader))
 ```
 
-Python API 和本地管理 CLI 是可信操作接口；`filewise agent` 则只使用 HTTP 认证网关。HTTP 身份由服务端固定，Agent 凭据不能访问操作员的草稿接口。数据库管理员仍在可信边界内。
+Python API 和本地管理 CLI 是可信操作接口；`filewise agent` 则只使用 HTTP 认证网关。HTTP 身份由服务端固定，工作区 Agent 只访问明确授权项目的知识接口，不能进入操作员审批/发布接口；旧只读凭据仍不能读草稿。数据库管理员仍在可信边界内。
 
 完整请求模型和端点见带认证的 `/api/openapi.json`，或 [API 文档](docs/api.md)。主界面提供项目与文件工作流；`/admin` 保留底层范围、修订和发布控制台。
 
@@ -219,6 +245,7 @@ uv sync --locked --all-extras --no-editable
 uv run --no-sync ruff check src tests
 uv run --no-sync ruff format --check src tests
 uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync python examples/check_workspace.py
 node --check src/filewise/static/workspace.js
 uv build
 ```

@@ -11,12 +11,12 @@ import stat
 import uuid
 from pathlib import Path, PurePosixPath
 
-from pydantic import Field, JsonValue, field_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from .changes import fragment_diff, json_fields
 from .engine import FilewiseError, canonical, digest, require
 from .ingest import MAX_BYTES, extract
-from .models import ID, BuildRequest, Check, Evidence, Model, Revision, Scope, now
+from .models import ID, BuildRequest, Check, Evidence, Model, Revision, Scope, now, timestamp
 
 MAX_FILES = 1000
 MAX_PROJECT_BYTES = 50 * 1024 * 1024
@@ -89,6 +89,42 @@ class ProjectSpec(Model):
         for value in values:
             relative_path(value)
         return values
+
+
+class FileMetadata(Model):
+    summary: str = Field(default="", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    entities: list[ID] = Field(default_factory=list, max_length=30)
+    depends_on: list[str] = Field(default_factory=list, max_length=100)
+    facts: dict[str, JsonValue] = Field(default_factory=dict, max_length=40)
+    evidence: list[Evidence] = Field(default_factory=list, max_length=30)
+    owner: str = Field(default="", max_length=120)
+    authority: int = Field(default=100, ge=0, le=1000)
+    valid_from: str | None = None
+    valid_until: str | None = None
+
+    @field_validator("depends_on")
+    @classmethod
+    def dependency_paths(cls, values):
+        return sorted({relative_path(value) for value in values})
+
+    @field_validator("valid_from", "valid_until")
+    @classmethod
+    def dates(cls, value):
+        return timestamp(value) if value else None
+
+    @field_validator("facts")
+    @classmethod
+    def fact_size(cls, value):
+        if any(not key or len(key) > 100 for key in value) or len(canonical(value)) > 16000:
+            raise ValueError("Facts require bounded names and at most 16,000 characters")
+        return value
+
+    @model_validator(mode="after")
+    def bounded_metadata(self):
+        if len(canonical(self).encode()) > 64000:
+            raise ValueError("File metadata exceeds 64,000 bytes")
+        return self
 
 
 class CommitRequest(Model):
@@ -346,7 +382,9 @@ class Projects:
             if data.expected_parent != (head["id"] if head else None):
                 raise FilewiseError("Commit history changed; refresh and review the comparison again", 409)
             old = self._snapshot(db, project_id, head["release_id"], actor)[4] if head else {}
-            if {p: f["sha256"] for p, f in old.items()} == {p: f["sha256"] for p, f in manifest.items()}:
+            if {p: (f["sha256"], f.get("metadata")) for p, f in old.items()} == {
+                p: (f["sha256"], f.get("metadata")) for p, f in manifest.items()
+            }:
                 raise FilewiseError("No file changes since the last commit", 409)
             item = {
                 "project_id": project_id,
@@ -374,17 +412,44 @@ class Projects:
             "base_release": base_release,
         }
 
+    def _latest(self, db, project_id):
+        guarded = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='writebacks' AND type='table'"
+        ).fetchone()
+        join = "LEFT JOIN writebacks w ON w.release_id=s.release_id" if guarded else ""
+        predicate = (
+            "(w.status='applied' OR (w.status IS NULL AND coalesce(json_extract(s.report,'$.writeback_required'),0)=0))"
+            if guarded
+            else "coalesce(json_extract(s.report,'$.writeback_required'),0)=0"
+        )
+        return db.execute(
+            f"SELECT s.* FROM project_snapshots s {join} WHERE s.project_id=? AND {predicate} ORDER BY s.rowid DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+
     def snapshot(
-        self, project_id, actor, files=None, *, base_release=None, captured=False, restore_from=None
+        self,
+        project_id,
+        actor,
+        files=None,
+        *,
+        base_release=None,
+        captured=False,
+        restore_from=None,
+        metadata=None,
+        write_meta=None,
+        pending_write=False,
     ):
         require(actor, "editor")
         with self.engine.connect() as db:
             project = self._project(db, project_id, actor)
-            prior_row = db.execute(
-                "SELECT manifest FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC LIMIT 1",
-                (project_id,),
-            ).fetchone()
-        prior_manifest = json.loads(prior_row[0]) if prior_row else {}
+            prior_row = self._latest(db, project_id)
+        prior_manifest = {}
+        prior_id = base_release or (prior_row["release_id"] if prior_row else None)
+        if prior_id:
+            with self.engine.connect() as db:
+                prior_manifest = self._snapshot(db, project_id, prior_id, actor)[4]
+        metadata = metadata or {}
         spec = ProjectSpec.model_validate_json(project["spec"])
         patterns = DEFAULT_EXCLUDES + spec.excludes
         if project["root"]:
@@ -424,6 +489,20 @@ class Projects:
                 "media_type": mimetypes.guess_type(path)[0] or "application/octet-stream",
                 "extraction": extraction,
             }
+            stored_meta = prior_manifest.get(path, {}).get("metadata")
+            if path in metadata:
+                stored_meta = None
+                if metadata[path] is not None:
+                    declared = FileMetadata.model_validate(metadata[path]).model_dump(mode="json")
+                    stored_meta = {**declared, "content_sha256": sha, "declared_by": actor.id}
+            if stored_meta:
+                fields["metadata"] = stored_meta
+                fields["metadata_current"] = stored_meta["content_sha256"] == sha
+                if fields["metadata_current"]:
+                    fields.update({"fact:" + key: value for key, value in stored_meta["facts"].items()})
+            dependencies = sorted(
+                set(spec.dependencies.get(path, [])) | set((stored_meta or {}).get("depends_on", []))
+            )
             values = {f["locator"]: f["text"] for f in fragments}
             if Path(path).suffix.lower() in (".xlsx", ".csv"):
                 for key, value in values.items():
@@ -436,6 +515,16 @@ class Projects:
                     values.update(json_fields(body))
                 except (ValueError, UnicodeDecodeError, RecursionError):
                     pass
+            structured = (
+                values
+                if Path(path).suffix.lower() in (".xlsx", ".csv")
+                else {key: value for key, value in values.items() if key == "" or key.startswith("/")}
+                if Path(path).suffix.lower() == ".json"
+                else {}
+            )
+            fields.update({"value:" + key: structured[key] for key in sorted(structured)[:120]})
+            if len(structured) > 120:
+                fields["structured_fields_truncated"] = True
             for check in spec.checks:
                 for target, pointer in (
                     (check.file, check.pointer),
@@ -453,7 +542,7 @@ class Projects:
                 if (
                     old_revision
                     and old_revision.fields == fields
-                    and old_revision.depends_on == [oid(p) for p in spec.dependencies.get(path, [])]
+                    and old_revision.depends_on == [oid(p) for p in dependencies]
                 ):
                     revisions.append(old_revision.id)
                     manifest[path] = prior_file
@@ -465,9 +554,12 @@ class Projects:
                 kind="record",
                 title=path,
                 fields=fields,
-                valid_from=instant,
-                depends_on=[oid(p) for p in spec.dependencies.get(path, [])],
-                evidence=[Evidence(source_id=source["id"], locator=anchor["locator"], quote=sha)],
+                valid_from=(stored_meta or {}).get("valid_from") or instant,
+                valid_until=(stored_meta or {}).get("valid_until"),
+                authority=(stored_meta or {}).get("authority", 100),
+                depends_on=[oid(p) for p in dependencies],
+                evidence=[Evidence(source_id=source["id"], locator=anchor["locator"], quote=sha)]
+                + [Evidence.model_validate(e) for e in (stored_meta or {}).get("evidence", [])],
             )
             self.engine.add_revision(revision, actor)
             revisions.append(revision.id)
@@ -519,11 +611,15 @@ class Projects:
             "skipped": skipped,
             "assurance": "declared_business_checks" if spec.checks else "file_integrity_only",
             "semantic_status": "review_required",
-            "dependency_basis": "reviewer_declared",
+            "dependency_basis": "project_contract_and_versioned_metadata",
             "verification": release["bundle"]["verification"],
         }
+        if pending_write:
+            report["writeback_required"] = True
         if restore_from:
             report["restore_from"] = restore_from
+        if write_meta:
+            report["write"] = write_meta
         with self.engine.connect(True) as db:
             db.execute(
                 "INSERT INTO project_snapshots VALUES(?,?,?,?,?,?,?)",
@@ -543,7 +639,12 @@ class Projects:
         changes = []
         for path in sorted(old.keys() | manifest.keys()):
             before, after = old.get(path), manifest.get(path)
-            if before and after and before["sha256"] == after["sha256"]:
+            if (
+                before
+                and after
+                and before["sha256"] == after["sha256"]
+                and before.get("metadata") == after.get("metadata")
+            ):
                 continue
             a = self.engine.source(before["source_id"], actor)["fragments"][1:] if before else []
             b = self.engine.source(after["source_id"], actor)["fragments"][1:] if after else []
@@ -554,7 +655,11 @@ class Projects:
                     "before_hash": before["sha256"] if before else None,
                     "after_hash": after["sha256"] if after else None,
                     "locations": fragment_diff(a, b, format=Path(path).suffix.lstrip(".")),
-                    "binary_changed": not a and not b,
+                    "binary_changed": not a
+                    and not b
+                    and (before or {}).get("sha256") != (after or {}).get("sha256"),
+                    "metadata_before": (before or {}).get("metadata"),
+                    "metadata_after": (after or {}).get("metadata"),
                 }
             )
         # Use declared dependencies for knowledge impact; no hidden completeness claim.
@@ -685,7 +790,10 @@ class Projects:
         with self.engine.connect(True) as db:
             project, _, release, bundle, manifest = self._snapshot(db, project_id, release_id, actor)
             if preview:
-                if not actor.roles & {"editor", "reviewer", "publisher"}:
+                if (
+                    not actor.roles & {"editor", "reviewer", "publisher"}
+                    and project_id not in actor.workspace_projects
+                ):
                     raise FilewiseError("Draft preview requires a review role", 403)
             else:
                 self._ready(db, release, bundle, actor)

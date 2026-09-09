@@ -6,20 +6,20 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| Ruff 静态与格式检查 | 通过，26 个 Python 文件（含端到端示例） |
-| 源码 unittest | **59 项通过**，documents extras 全部安装，无跳过 |
-| 普通安装后相同测试 | **59 项通过**，不依赖 PYTHONPATH |
+| Ruff 静态与格式检查 | 通过，29 个 Python 文件（含端到端示例） |
+| 源码 unittest | **71 项通过**，documents extras 全部安装，无跳过 |
+| 普通安装后相同测试 | **71 项通过**，不依赖 PYTHONPATH |
 | 两套浏览器 JavaScript `node --check` | 通过 |
 | 内核完整生命周期 | 100 → 单边变更 BLOCKED → 修复 120 PASS → 审批/激活 → 回退；固定版本和审计链通过 |
 | 文件项目 API | 完整上传集、相对路径边界、缺失依赖、不可变来源、JSON/Excel 跨文件检查、实际内容差分 |
-| Agent 身份边界 | Agent 凭据拒绝操作员/草稿接口；会话绑定身份；发布/来源撤销阻止后续读取 |
+| Agent 身份边界 | 旧凭据保持生产只读；工作区凭据只访问明确授权项目，不能审批/发布；只读角色拒绝保存，任务绑定身份，撤销阻止历史读取和写入重试 |
 | 真实 HTTP + 独立 CLI 子进程 | open / ls / read / search 成功；下载原字节相等；已有目标拒绝覆盖；目录变化返回 STALE |
 | macOS 新进程限制 | 直接读写原文件、SQLite、操作员令牌均被拒绝；同一子进程通过认证网关读取成功；公开 `project launch` 命令路径通过 |
 | 浏览器文件工作台 | XLSX/CSV 单元格预览、JSON Pointer 差分、需求 → 检验计划 → 交付的影响路径 |
 | 浏览器审核发布 | 真实修改需求 BLOCKED → 旧 Agent 读取拒绝 → 修复 PASS → 切换独立审核者 → 发布者启用 → 新 Agent 读取凭据 PASS |
 | 浏览器普通上传 | 从空项目创建、上传合成 TXT/CSV 完整文件集、检查候选与文件完整性限定说明 |
 | 浏览器状态复验 | 切换空项目清除旧版本/文件信息；已审核提示显示审核人；控制台未发现 JS 错误或警告 |
-| 打包 | wheel 24 项、sdist 52 项；包含工作台和 Agent 模块，清单不含运行数据、令牌、内部工作记录或父目录材料 |
+| 打包 | wheel 25 项、sdist 55 项；包含工作台、Agent 工作区和端到端示例，清单不含运行数据、令牌、内部工作记录或父目录材料 |
 | 独立 wheel 安装 | 新建临时 venv，按 uv.lock 离线安装最新 wheel + documents；仓库外运行真实 follow/run/HTTP/审批写回/Agent 读取检查通过 |
 | 自动观察中间件 | 初次配置/重启凭据与规则保留、去抖、暂停恢复、最后文件删除、Excel 单元格与跨文件检查通过 |
 | 受控写回 | 副本修改不改变原件；未审批/原件漂移/活动版本变化拒绝；写入失败恢复、外部冲突保留、激活后中断恢复通过 |
@@ -32,6 +32,15 @@
 新增项目测试涵盖相同字节复用修订、JSON 类型与 Pointer、文本插入对齐、Excel B2 变更、跨文件约束、目录漂移、路径/符号链接排除、原件读取、Actor 绑定会话、固定版本、报告和 manifest 篡改拒绝。文档测试在内存生成 DOCX/XLSX/PPTX/PDF，检查坐标和文本，以及公式不执行、扫描 PDF 无文本和输入限制。
 
 `examples/check_agent_boundary.py` 可重复执行真实进程边界检查。只在 macOS 验证了 sandbox-exec，未声称控制已经运行的 Codex 或其他外部工具进程。没有调用 Codex 云模型或传输真实业务文件。
+
+## Agent 原生工作区验证
+
+- `tests/test_workspace.py` 的12项测试：直接保存原件与 metadata、metadata-only 版本/提交/历史恢复、精确二进制和删除、latest/published/HEAD/commit、服务端类型化 diff 与双向 impact、dry-run/require_pass、过期 metadata 不再提升事实。
+- 完整计算链：有界依赖上下文、固定任务身份/版本、结果字段断言、引用核对、输出 SHA、执行前基线与有效期、执行后真实已完成写入及输出版本业务回归。未来声明、错误引用/输出、无输出证据、权限不足分别拒绝或 NEEDS_REVIEW，不冒充生产许可。
+- 并发写入只完成一个；过期基线、原件外部变化、越界/.env 路径、错误Base64及额外身份字段拒绝。故障注入验证写入补偿、Agent仅恢复自己的操作；候选与意图间中断不会推进 latest 或泄漏未保存 metadata。
+- `examples/check_workspace.py` 实际执行本地 auth-agent、启动回环 HTTP，再在无法访问本地数据库配置的独立 CLI 子进程中完成：读→写+meta→历史/diff→resolve/impact→compile→三阶段 verify→下载并修改Excel副本→Filewise保存→删除。全过程生产指针不变，只有合成文件；不依赖 watcher、不调用云模型。
+- 源码与普通安装均通过71项测试；独立 wheel 安装在仓库外复验全套测试及真实 CLI 工作区示例。兼容的 `check_agent_boundary.py` 仍通过实际 macOS 原件/数据库/操作员令牌拒绝、网关允许检查。
+- GitHub CI 增加工作区 CLI 示例，但未向远程提交运行。既有浏览器流程为此前已执行记录；本增量的 metadata 差异显示通过 JavaScript 语法检查，未声称重新执行完整浏览器流程。
 
 ## 本机环境问题与处理
 

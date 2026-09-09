@@ -1,5 +1,7 @@
 # Filewise 文件中间件
 
+本文介绍可选的保存后观察、原生工具审核副本与人工写回。Agent 直接调用 Filewise 完成读写和知识计算的主路径见 [Agent 原生接口](agent.md)，不依赖这里的监听器或钩子。
+
 ## 最短使用路径
 
 先在 Filewise 仓库安装：`uv sync --locked --all-extras --no-editable`，然后运行 `uv run --no-sync filewise start`。页面自动打开并登录：**关注文件夹 → 连接 Agent → 验证接入**。之后照常使用 Agent，通过页面检查、审核和写回修改。所需项目配置由“连接”自动安装；Agent 自身可能要求一次项目钩子/扩展信任，随后新开任务或重新加载。

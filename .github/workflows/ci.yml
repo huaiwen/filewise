@@ -21,5 +21,6 @@ jobs:
       - run: node --check src/filewise/static/console.js
       - run: node --check src/filewise/static/workspace.js
       - run: uv run --no-sync python examples/check_agent_boundary.py
+      - run: uv run --no-sync python examples/check_workspace.py
       - run: uv build
       - run: uv run --no-sync filewise --db "$RUNNER_TEMP/demo.db" demo

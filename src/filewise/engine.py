@@ -257,6 +257,12 @@ class Engine:
         )
 
     def _scope(self, db, scope_id, actor):
+        if (
+            actor.audience == "agent"
+            and actor.workspace_projects
+            and scope_id not in {"project." + project for project in actor.workspace_projects}
+        ):
+            raise FilewiseError("Project is outside this Agent credential", 403)
         row = db.execute("SELECT data FROM scopes WHERE id=?", (scope_id,)).fetchone()
         if not row:
             raise FilewiseError("Scope not found", 404)

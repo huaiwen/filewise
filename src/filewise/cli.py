@@ -278,6 +278,12 @@ def main(argv=None):
         "auth-init", help="Generate operator and restricted Agent tokens; refuses overwrite"
     )
     auth.add_argument("--out", type=Path, default=Path(".filewise/tokens.json"))
+    agent_auth = commands.add_parser(
+        "auth-agent", help="Issue an explicitly project-scoped knowledge-workspace credential"
+    )
+    agent_auth.add_argument("project_id")
+    agent_auth.add_argument("--tokens", type=Path, default=Path(".filewise/tokens.json"))
+    agent_auth.add_argument("--read-only", action="store_true")
     serve = commands.add_parser("serve")
     serve.add_argument("--tokens", type=Path, default=os.environ.get("FILEWISE_TOKENS_FILE"))
     serve.add_argument("--host", default="127.0.0.1")
@@ -387,6 +393,49 @@ def main(argv=None):
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(tokens, indent=2) + "\n")
             result = {"tokens_file": str(args.out), "identities": len(tokens)}
+        elif args.command == "auth-agent":
+            import hashlib
+            import uuid
+
+            from .api import validate_tokens
+            from .middleware import Middleware, replace_bytes
+            from .projects import Projects
+
+            engine = Engine(args.db)
+            projects = Projects(engine)
+            operator = Actor(id=args.actor, roles=set(args.roles.split(",")))
+            from .engine import require
+
+            require(operator, "editor")
+            projects.detail(args.project_id, operator)
+            path = args.tokens.absolute()
+            if path.resolve() != path:
+                raise FilewiseError("Credential file must not be a symlink")
+            with Middleware(projects).lock("filewise-credentials"):
+                original = path.read_bytes()
+                tokens = validate_tokens(json.loads(original))
+                token = secrets.token_urlsafe(32)
+                identity = Actor(
+                    id="agent-" + uuid.uuid4().hex,
+                    audience="agent",
+                    roles={"reader"} if args.read_only else {"reader", "editor"},
+                    workspace_projects={args.project_id},
+                )
+                tokens[token] = identity
+                replace_bytes(
+                    path.parent,
+                    path.name,
+                    (canonical(tokens) + "\n").encode(),
+                    hashlib.sha256(original).hexdigest(),
+                )
+                path.chmod(0o600)
+            result = {
+                "FILEWISE_TOKEN": token,
+                "project_id": args.project_id,
+                "actor": identity,
+                "restart_required": True,
+                "instruction": "Inject only this token into the Agent environment; restart Filewise to load it.",
+            }
         elif args.command == "serve":
             import uvicorn
 
@@ -422,7 +471,10 @@ def main(argv=None):
                 elif args.action == "status":
                     result = projects.detail(args.project_id, actor)
                 elif args.action == "sync":
-                    result = projects.snapshot(args.project_id, actor)
+                    from .middleware import Middleware
+                    from .workspace import Workspace
+
+                    result = Workspace(Middleware(projects)).sync(args.project_id, actor)
                 elif args.action == "log":
                     result = projects.detail(args.project_id, actor)["commits"]
                 elif args.action == "diff":
@@ -503,6 +555,12 @@ def main(argv=None):
         print(canonical(result))
         if args.command == "run" or (args.command == "project" and args.action == "launch"):
             return result["exit_code"]
+        if (
+            args.command == "agent"
+            and isinstance(result, dict)
+            and (result.get("decision") in ("BLOCKED", "NEEDS_REVIEW") or result.get("status") == "blocked")
+        ):
+            return 2
         return 0
     except (FilewiseError, ValidationError, OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
