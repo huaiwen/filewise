@@ -374,7 +374,9 @@ class Projects:
             "base_release": base_release,
         }
 
-    def snapshot(self, project_id, actor, files=None, *, base_release=None, captured=False):
+    def snapshot(
+        self, project_id, actor, files=None, *, base_release=None, captured=False, restore_from=None
+    ):
         require(actor, "editor")
         with self.engine.connect() as db:
             project = self._project(db, project_id, actor)
@@ -520,6 +522,8 @@ class Projects:
             "dependency_basis": "reviewer_declared",
             "verification": release["bundle"]["verification"],
         }
+        if restore_from:
+            report["restore_from"] = restore_from
         with self.engine.connect(True) as db:
             db.execute(
                 "INSERT INTO project_snapshots VALUES(?,?,?,?,?,?,?)",

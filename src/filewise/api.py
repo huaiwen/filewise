@@ -320,6 +320,10 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
     ):
         return projects.compare(project_id, release_id, who, base_release)
 
+    @app.post("/api/projects/{project_id}/snapshots/{release_id}/restore", status_code=201)
+    def restore_snapshot(project_id: str, release_id: str, who=Depends(actor)):
+        return middleware.restore(project_id, release_id, who)
+
     @app.post("/api/projects/{project_id}/snapshots/{release_id}/approve")
     def approve_snapshot(project_id: str, release_id: str, who=Depends(actor)):
         return projects.approve(project_id, release_id, who)

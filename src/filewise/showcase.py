@@ -72,8 +72,16 @@ class Showcase:
         )
 
     def write_plan(self, pressure):
-        if getattr(self, "plan_pressure", None) == pressure:
-            return
+        from openpyxl import load_workbook
+
+        path = self.root / "inspection.xlsx"
+        if path.exists():
+            current = load_workbook(path, read_only=True)
+            try:
+                if current.active["B2"].value == pressure:
+                    return
+            finally:
+                current.close()
         book = self.book_type()
         sheet = book.active
         sheet.title = "Inspection"
@@ -81,7 +89,6 @@ class Showcase:
         sheet.append(["液压测试", pressure, "检验工程师"])
         book.save(self.root / "inspection.xlsx")
         book.close()
-        self.plan_pressure = pressure
 
     def bootstrap(self):
         return {"mode": "synthetic-demo", "project_id": "hydraulic-demo", "identities": self.identities}

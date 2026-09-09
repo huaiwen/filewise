@@ -73,6 +73,20 @@ filewise run /absolute/path/to/files -- python3 -c 'from pathlib import Path; Pa
 
 当前受控执行仅支持 macOS；观察与恢复需要 POSIX 文件锁（macOS/Linux）。其他平台明确拒绝未隔离的受控启动。不控制已有模型、独立 MCP 服务、其他终端或网络代理，也没有把任意恶意程序隔离在完整容器里；底层限制只是指定路径的读写边界。模型应使用工作副本相对路径，不能把工作目录改回原目录。
 
+## 从历史版本恢复文件
+
+在提交历史中打开一个版本，点击“从此版本恢复文件”，确认生成候选。系统以 `filewise-restore` 身份保存当下原件，再从历史字节生成新候选；审计记录发起人和来源版本。页面默认对比生成时的原件，展示需要新增、修改和删除的关注文件，审核后再写回。本机 `local-owner` 可人工审核系统候选；候选作者本身不能审核。
+
+恢复与 Agent 接入、观察开关独立，支持 macOS/Linux 的已注册本地目录。保留全部提交、快照及排除文件；不版本化文件权限、扩展属性或空目录。完整文件集恢复不提供单文件选择或自动合并。原件已与目标一致则拒绝生成重复候选；跨项目、上传项目、撤销或无权读取的来源均拒绝。
+
+新候选重新运行现有契约和检查，失败时仍为 BLOCKED。来源版本写回前再次核对；生成候选后原件改变或活动指针改变，写回返回 409，不覆盖新修改。修复中断的写回使用下节的恢复流程，与选择历史版本生成候选不同。
+
+```bash
+filewise --db DB_PATH project restore PROJECT_ID HISTORICAL_RELEASE_ID
+# 使用返回的 release_id 作为 CANDIDATE_ID，在页面或 CLI 核对差异并审核后：
+filewise --db DB_PATH --actor local-publisher --roles publisher project apply PROJECT_ID CANDIDATE_ID --expected-active CURRENT_RELEASE_ID
+```
+
 ## 写回与恢复
 
 写回前重新验证候选完整性、独立审批、当前证据权限、活动版本 CAS，以及原件是否仍与任务开始时一致。已经变化的原件返回 STALE，保留外部修改，需要以最新原件重新执行任务。失败检查和未审批版本不会写入原件。
@@ -104,11 +118,12 @@ filewise recover /absolute/path/to/files RELEASE_ID
 | `POST .../connections/{agent}/check` | 实际隔离自检；不标记 Agent 已加载 |
 | `PUT /api/projects/{id}/watch` | 保存 `{ "enabled": true, "mode": "both", "settle_seconds": 1 }` |
 | `GET /api/projects/{id}/snapshots/{release_id}` | 差异、定位、依赖影响、检查与 writeback 状态 |
+| `POST .../snapshots/{release_id}/restore` | editor；无正文，生成本地目录恢复候选，返回 201；不改原件 |
 | `POST .../snapshots/{release_id}/approve` | 独立审核 |
 | `POST .../snapshots/{release_id}/apply` | 传 `{ "expected_active": 当前release或null }` 写回并发布 |
 | `POST .../snapshots/{release_id}/recover` | 恢复未完成的写回 |
 
-`follow` 创建的项目 ID 为 `workspace`；`start` 按所选路径生成项目 ID。`last_event.kind` 区分 `after_save` 与 `before_write`，后者的 `original_files_changed` 为 false。用 `release_id` 去重，并读取不可变报告，可接自己的后续处理；这里只轮询取报告，没有执行用户自定义 webhook/shell hook。观测只保留最新通知，完整候选历史仍在项目快照列表中。API 不提供远程执行任意模型命令的端点；工具执行发生在本机 Agent 钩子或 `run` 启动的子进程中。
+`follow` 创建的项目 ID 为 `workspace`；`start` 按所选路径生成项目 ID。`last_event.kind` 区分 `after_save`、`before_write` 与 `restore`；后两者的 `original_files_changed` 为 false。恢复事件与候选报告另含 `restore_from`，指向历史来源版本。用 `release_id` 去重，并读取不可变报告，可接自己的后续处理；这里只轮询取报告，没有执行用户自定义 webhook/shell hook。观测只保留最新通知，完整候选历史仍在项目快照列表中。API 不提供远程执行任意模型命令的端点；工具执行发生在本机 Agent 钩子或 `run` 启动的子进程中。
 
 ## 可重复验证
 

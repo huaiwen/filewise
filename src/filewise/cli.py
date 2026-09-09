@@ -234,10 +234,10 @@ def main(argv=None):
     launch.add_argument("--tokens", type=Path, required=True)
     launch.add_argument("--url", default=os.environ.get("FILEWISE_URL", "http://127.0.0.1:8000"))
     launch.add_argument("executable", nargs=argparse.REMAINDER)
-    for name in ("status", "sync", "diff", "commit", "log", "review", "publish"):
+    for name in ("status", "sync", "diff", "commit", "log", "restore", "review", "publish", "apply"):
         action = actions.add_parser(name)
         action.add_argument("project_id")
-        if name in ("diff", "commit", "review", "publish"):
+        if name in ("diff", "commit", "restore", "review", "publish", "apply"):
             action.add_argument("release_id")
         if name == "diff":
             action.add_argument(
@@ -246,7 +246,7 @@ def main(argv=None):
         if name == "commit":
             action.add_argument("-m", "--message", required=True)
             action.add_argument("--expected-parent", required=True, help="Commit ID from status/log, or NONE")
-        if name == "publish":
+        if name in ("publish", "apply"):
             action.add_argument("--expected-active", default=None)
     commands.add_parser("demo", help="Run synthetic lifecycle in a fresh database")
     commands.add_parser("overview")
@@ -441,6 +441,16 @@ def main(argv=None):
                         },
                         actor,
                     )
+                elif args.action in ("restore", "apply"):
+                    from .middleware import Middleware
+
+                    middleware = Middleware(projects)
+                    if args.action == "restore":
+                        result = middleware.restore(args.project_id, args.release_id, actor)
+                    else:
+                        result = middleware.apply(
+                            args.project_id, args.release_id, args.expected_active, actor
+                        )
                 elif args.action == "review":
                     result = projects.approve(args.project_id, args.release_id, actor)
                 else:

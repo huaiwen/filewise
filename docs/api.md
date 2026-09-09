@@ -67,7 +67,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `POST /api/projects/{id}/upload` | editor；multipart 多个 `files`，文件名为项目相对路径；完整文件集创建候选版本 |
 | `GET /api/projects/{id}/snapshots/{release}` | 操作员查看 manifest、定位变更、影响与检查结果 |
 | `GET /api/projects/{id}/snapshots/{release}/preview?path=...` | editor/reviewer/publisher 审核预览，receipt.decision 为 DRAFT_PREVIEW |
+| `POST /api/projects/{id}/snapshots/{release}/restore` | editor；无正文，以目标历史字节生成本地恢复候选，返回 201；不写原件 |
 | `POST /api/projects/{id}/snapshots/{release}/approve` | reviewer，须独立于候选作者且构建 PASS |
+| `POST /api/projects/{id}/snapshots/{release}/apply` | publisher；正文 `{"expected_active": null}` 或当前 ID，写回已审核候选并发布 |
 | `POST /api/projects/{id}/snapshots/{release}/activate` | publisher，正文 `{"expected_active": null}` 或当前 ID；目录必须匹配快照 |
 | `POST /api/projects/{id}/sessions?release_id=...` | Agent 可用；省略 release_id 时固定当前发布，返回 session_id |
 | `GET /api/sessions/{session}` | Agent 可用；仅会话拥有者，返回固定版本文件集 |
@@ -75,6 +77,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定版本片段的字面查询，最多 100 条结果，含来源哈希与位置 |
 
 提交返回 id、project_id、release_id、parent_id、message、author、created_at。`expected_parent` 必须显式传入，且等于当前最新提交的 id；历史变化或内容与父提交一致返回 409，空说明返回 422。提交不扫描目录、不批准、不激活、不写回原件。`compare` 重算 changes 和 impact；verification 仍是目标快照的构建检查，原始审核报告不变。提交和比较均不向 Agent 凭据开放。
+
+`restore` 返回新的快照，`report.restore_from` 是历史来源，`report.base_release` 是本次保存的实时原件基线，`report.changes` 是将要写入的完整文件集差异。候选保留现有审批/发布流程，可另行记录提交；201 不代表已恢复原件或业务检查通过。目标与原件相同时、目标撤销时或存在中断写回时返回 409；来源无权访问返回 403，上传项目返回 400。写回时再次核对来源与当前原件，后续外部修改不被覆盖。观察开关不限制人工恢复。
 
 项目版本的撤销与指针回退沿用 `POST /api/releases/{release}/revoke` 和 `/rollback`。回退不会覆盖真实目录，后续读取仍需通过哈希匹配。搜索是有界字面匹配，未接入向量检索、zvec-grep 或 TeamAI。
 

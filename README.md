@@ -103,14 +103,18 @@ filewise agent search SESSION_ID 压力
 
 ## 用类似 Git 的方式管理知识
 
-当前可运行的是 **查看改动 → 记录提交 → 查看历史**：
+当前可运行的是 **查看改动 → 记录提交 → 查看历史 → 审核恢复**：
 
 - **快照**自动保存每次捕获的完整文件集；完成一轮修改后，选择其中一个版本并填写说明，记为一次**提交**。多次保存的累计改动按上次提交计算。
-- **变更**默认对比上次提交；历史中的提交对比它的父提交。也可切回构建时的发布基线，查看原来的审核报告。Excel 单元格、JSON 字段及声明依赖复用同一比较逻辑。
+- **变更**默认对比上次提交；历史中的提交对比它的父提交。也可切到“相对构建基线”，查看原来的审核报告。Excel 单元格、JSON 字段及声明依赖复用同一比较逻辑。
 - **提交历史**保留提交说明、作者、时间、父提交与原文件版本；自动快照在“全部快照与发布记录”中。内容未变化时拒绝重复提交；并发改变历史时要求刷新后重新核对。
 - **记录提交**不等于批准使用。草稿或检查失败的版本也可留档；独立审核、发布、受控写回和 Agent 读取门禁仍单独执行。
 
-每次提交包含所选快照中的全部关注文件，尚无逐文件/逐块暂存。已有数据库升级后保留全部快照，提交历史从用户首次记录开始。回退发布指针保留历史，不覆盖原文件。
+每次提交包含所选快照中的全部关注文件，尚无逐文件/逐块暂存。已有数据库升级后保留全部快照，提交历史从用户首次记录开始。
+
+**恢复历史文件**：在提交历史中点开目标版本，点击 **从此版本恢复文件 → 生成恢复候选**。Filewise 先保存此刻的原件，再显示恢复带来的新增、修改和删除；确认后由人工 **审核通过 → 写回原文件并发布**。原件与历史完全一致时提示无需恢复。目标版本尚未审核或检查失败时，也只生成重新检查的候选，不能跳过发布门禁。
+
+恢复针对本地目录的完整关注文件集：补回历史文件，删除目标版本中没有的关注文件，保留排除文件。生成候选不改原件，也不重写提交历史；可将恢复结果另记为一次提交。原件再次变化时拒绝写回，需重新生成候选。操作不要求 Agent 连接或启用自动观察；当前需 macOS/Linux。上传项目可下载历史原件，但不提供本机目录恢复。“仅切换发布指针”仍不修改原文件。
 
 本地 CLI 对应命令如下，`PROJECT_ID` 和 `RELEASE_ID` 来自 `project status` / `project sync` 输出；用 `--db` 指向启动服务时的同一数据库：
 
@@ -120,6 +124,17 @@ filewise project diff PROJECT_ID RELEASE_ID
 filewise project commit PROJECT_ID RELEASE_ID -m "初始资料" --expected-parent NONE
 filewise project log PROJECT_ID
 # 后续提交把 NONE 换成 log 中最新提交的 id
+```
+
+命令行恢复与审核写回（先设置同一数据库路径）：
+
+```bash
+filewise --db DB_PATH project restore PROJECT_ID HISTORICAL_RELEASE_ID
+# 输出新候选 CANDIDATE_ID，report.base_release 是生成时保存的原件版本
+filewise --db DB_PATH project diff PROJECT_ID CANDIDATE_ID --base-release BASELINE_ID
+filewise --db DB_PATH --actor local-reviewer --roles reviewer project review PROJECT_ID CANDIDATE_ID
+filewise --db DB_PATH --actor local-publisher --roles publisher project apply PROJECT_ID CANDIDATE_ID --expected-active CURRENT_RELEASE_ID
+# 尚无当前发布时省略 --expected-active
 ```
 
 这些命令操作 Filewise 的本地知识历史，不会执行 Git commit 或向 GitHub 上传。

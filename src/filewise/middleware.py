@@ -22,6 +22,7 @@ from .projects import DEFAULT_EXCLUDES, ProjectSpec, relative_path, scan
 
 MONITOR = Actor(id="filewise-monitor", roles={"editor"})
 GUARD = Actor(id="filewise-guard", roles={"editor"})
+RESTORER = Actor(id="filewise-restore", roles={"editor"})
 
 
 def hashes(files):
@@ -246,9 +247,33 @@ class Middleware:
                 "original_files_changed": False,
             }
 
-    def capture(self, project_id, baseline, files, actor, *, writer=None):
+    def restore(self, project_id, release_id, actor):
+        """Propose historical bytes against today's originals; approval/writeback remain separate."""
+        require(actor, "editor")
+        with self.lock(project_id):
+            self.require_recovered(project_id)
+            with self.engine.connect() as db:
+                project, _, release, _, manifest = self.projects._snapshot(db, project_id, release_id, actor)
+                if not project["root"]:
+                    raise FilewiseError("File restoration requires a registered local directory")
+                if release["revoked"]:
+                    raise FilewiseError("Cannot restore a revoked snapshot", 409)
+                bodies = self._bodies(db, manifest.values())
+                files = {p: bodies[f["sha256"]] for p, f in manifest.items()}
+            spec = ProjectSpec.model_validate_json(project["spec"])
+            originals, _ = scan(project["root"], DEFAULT_EXCLUDES + spec.excludes, spec.includes)
+            if hashes(originals) == hashes(files):
+                raise FilewiseError("Original files already match this snapshot; nothing to restore", 409)
+            baseline = self.projects.snapshot(project_id, RESTORER, originals, captured=True)
+            return self.capture(
+                project_id, baseline["release_id"], files, RESTORER, writer=actor.id, restore_from=release_id
+            )
+
+    def capture(self, project_id, baseline, files, actor, *, writer=None, restore_from=None):
         """Caller holds the project lock; snapshots and approval use the existing file kernel."""
-        snapshot = self.projects.snapshot(project_id, actor, files, base_release=baseline, captured=True)
+        snapshot = self.projects.snapshot(
+            project_id, actor, files, base_release=baseline, captured=True, restore_from=restore_from
+        )
         with self.engine.connect(True) as db:
             project = self.projects._project(db, project_id, actor)
             db.execute(
@@ -256,7 +281,7 @@ class Middleware:
                 (snapshot["release_id"], project_id, baseline, "pending", now()),
             )
             event = {
-                "kind": "before_write",
+                "kind": "restore" if restore_from else "before_write",
                 "release_id": snapshot["release_id"],
                 "paths": [c["path"] for c in snapshot["report"]["changes"]],
                 "decision": snapshot["verification"]["decision"],
@@ -264,13 +289,30 @@ class Middleware:
                 "writer": writer or actor.id,
                 "original_files_changed": False,
             }
+            if restore_from:
+                event["restore_from"] = restore_from
             db.execute("UPDATE watches SET last_event=? WHERE project_id=?", (canonical(event), project_id))
             self.engine._audit(db, project["scope_id"], actor, "guard.proposed", event)
         return snapshot
 
+    def _bodies(self, db, files):
+        bodies = {}
+        for file in files:
+            row = db.execute("SELECT body,digest FROM sources WHERE id=?", (file["source_id"],)).fetchone()
+            if (
+                not row
+                or row["digest"] != file["sha256"]
+                or hashlib.sha256(row["body"]).hexdigest() != file["sha256"]
+            ):
+                raise FilewiseError("Writeback source integrity failed", 409)
+            bodies[file["sha256"]] = bytes(row["body"])
+        return bodies
+
     def _versions(self, project_id, release_id, actor):
         with self.engine.connect() as db:
-            project, _, release, bundle, after = self.projects._snapshot(db, project_id, release_id, actor)
+            project, snapshot, release, bundle, after = self.projects._snapshot(
+                db, project_id, release_id, actor
+            )
             proposal = db.execute(
                 "SELECT * FROM writebacks WHERE release_id=? AND project_id=?", (release_id, project_id)
             ).fetchone()
@@ -279,13 +321,9 @@ class Middleware:
             if proposal["before_release"] != bundle["base_release"]:
                 raise FilewiseError("Writeback baseline integrity failed", 409)
             _, _, _, _, before = self.projects._snapshot(db, project_id, proposal["before_release"], actor)
-            bodies = {}
-            for file in [*before.values(), *after.values()]:
-                row = db.execute("SELECT body FROM sources WHERE id=?", (file["source_id"],)).fetchone()
-                if not row or hashlib.sha256(row[0]).hexdigest() != file["sha256"]:
-                    raise FilewiseError("Writeback source integrity failed", 409)
-                bodies[file["sha256"]] = bytes(row[0])
-            return project, release, bundle, dict(proposal), before, after, bodies
+            bodies = self._bodies(db, [*before.values(), *after.values()])
+            proposal = {**dict(proposal), "restore_from": json.loads(snapshot["report"]).get("restore_from")}
+            return project, release, bundle, proposal, before, after, bodies
 
     def _status(self, release_id, status, error=None):
         with self.engine.connect(True) as db:
@@ -311,6 +349,10 @@ class Middleware:
             if proposal["status"] != "pending":
                 raise FilewiseError("Recover the interrupted writeback before retrying", 409)
             with self.engine.connect() as db:
+                if proposal["restore_from"]:
+                    target = self.projects._snapshot(db, project_id, proposal["restore_from"], actor)[2]
+                    if target["revoked"]:
+                        raise FilewiseError("Cannot restore a revoked snapshot", 409)
                 if not release["approver"] or self.engine._runtime_issues(db, release, bundle, actor):
                     raise FilewiseError("Writeback requires passing checks and independent approval", 409)
                 active = db.execute(
