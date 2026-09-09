@@ -60,7 +60,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 | --- | --- |
 | `GET /api/projects` | 可见项目列表；Agent 仅收到 id、name、active_release |
 | `POST /api/projects` | editor；ProjectSpec（id、name、dependencies、checks、excludes），不接受服务器 root |
-| `GET /api/projects/{id}` | 操作员项目详情、契约和快照历史 |
+| `GET /api/projects/{id}` | 操作员项目详情、契约、snapshots 和 commits（新到旧） |
+| `POST /api/projects/{id}/commits` | editor；正文为 release_id、message（1–500 字符）、expected_parent（首次为 null），记录所选文件集 |
+| `GET /api/projects/{id}/snapshots/{release}/compare?base_release=...` | 操作员；对比同项目两个不可变快照，省略 base_release 时对比空文件集 |
 | `POST /api/projects/{id}/sync` | editor；扫描已明确注册的本地目录 |
 | `POST /api/projects/{id}/upload` | editor；multipart 多个 `files`，文件名为项目相对路径；完整文件集创建候选版本 |
 | `GET /api/projects/{id}/snapshots/{release}` | 操作员查看 manifest、定位变更、影响与检查结果 |
@@ -71,6 +73,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `GET /api/sessions/{session}` | Agent 可用；仅会话拥有者，返回固定版本文件集 |
 | `GET /api/sessions/{session}/read?path=...` | Agent 可用；每次重验资格，返回 text、fragments、原件 base64、receipt |
 | `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定版本片段的字面查询，最多 100 条结果，含来源哈希与位置 |
+
+提交返回 id、project_id、release_id、parent_id、message、author、created_at。`expected_parent` 必须显式传入，且等于当前最新提交的 id；历史变化或内容与父提交一致返回 409，空说明返回 422。提交不扫描目录、不批准、不激活、不写回原件。`compare` 重算 changes 和 impact；verification 仍是目标快照的构建检查，原始审核报告不变。提交和比较均不向 Agent 凭据开放。
 
 项目版本的撤销与指针回退沿用 `POST /api/releases/{release}/revoke` 和 `/rollback`。回退不会覆盖真实目录，后续读取仍需通过哈希匹配。搜索是有界字面匹配，未接入向量检索、zvec-grep 或 TeamAI。
 

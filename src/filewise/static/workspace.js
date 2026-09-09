@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files', watch:null, seenEvent:null, setup:null, connections:null};
+const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files', watch:null, seenEvent:null, setup:null, connections:null, comparison:null, commitDraft:null, selectedCommitId:null};
 const el = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
 const short = value => value ? value.slice(0,10) : '—';
 const stamp = value => new Date(value).toLocaleString('zh-CN',{hour12:false});
@@ -45,7 +45,7 @@ async function selectProject(id){
   state.project=await api('projects/'+enc(id));
   $('project-name').textContent=state.project.name;
   $('project-origin').textContent=state.project.source==='local'?'已注册本地目录':'上传的文件项目';
-  $('project-description').textContent=state.project.active_release?'当前发布 '+short(state.project.active_release)+' · 新变更经过检查与审核后启用':'尚未发布 · 查看文件版本，审核后发布';
+  $('project-description').textContent=state.project.active_release?'已记录 '+state.project.commits.length+' 次提交 · 当前发布 '+short(state.project.active_release):'已记录 '+state.project.commits.length+' 次提交 · 记录版本后可继续审核与发布';
   $('upload').disabled=!has('editor')||state.project.source!=='upload';
   $('sync').disabled=!has('editor')||state.project.source!=='local';
   $('watch-settings').disabled=state.project.source!=='local';
@@ -53,23 +53,52 @@ async function selectProject(id){
   await refreshConnections();
   await refreshWatch();
   $('snapshot-select').replaceChildren();
-  for(const s of state.project.snapshots){const o=el('option',stamp(s.created_at)+' · '+short(s.release_id)+(s.release_id===state.project.active_release?' · 当前':''));o.value=s.release_id;$('snapshot-select').append(o);}
+  for(const s of state.project.snapshots){const commit=state.project.commits.find(c=>c.release_id===s.release_id);const o=el('option',(commit?commit.message:'快照 · '+stamp(s.created_at))+' · '+short(s.release_id)+(s.release_id===state.project.active_release?' · 当前发布':''));o.value=s.release_id;$('snapshot-select').append(o);}
   if(state.project.snapshots.length){
     const selected=state.snapshot?.project_id===id&&state.project.snapshots.some(s=>s.release_id===state.snapshot.release_id)?state.snapshot.release_id:state.project.snapshots[0].release_id;
     await selectSnapshot(selected);
   }else{
-    state.snapshot=null;state.file=null;state.path=null;$('file-tree').replaceChildren();$('file-count').textContent='0';$('content').replaceChildren(empty('准备第一个文件版本','上传完整文件集；本地目录项目可直接点击同步目录。'));$('snapshot-select').append(el('option','暂无版本'));renderGate();
+    state.snapshot=null;state.file=null;state.path=null;$('file-tree').replaceChildren();$('file-count').textContent='0';$('content').replaceChildren(empty('准备第一个文件版本','上传完整文件集；本地目录项目可直接点击检查目录改动。'));$('snapshot-select').append(el('option','暂无版本'));renderGate();
   }
 }
-async function selectSnapshot(id){
+async function selectSnapshot(id,commitId=null){
+  state.selectedCommitId=commitId;
   $('agent-result').replaceChildren(el('p','点击验证以检查此刻的读取资格。','fine'));
   state.snapshot=await api(projectPath()+'/snapshots/'+enc(id));
   $('snapshot-select').value=id;
   if(state.watch?.last_event?.release_id===id){state.seenEvent=id;$('watch-event').hidden=true;}
   if(!state.snapshot.files.some(f=>f.path===state.path))state.path=state.snapshot.report.changes.find(c=>c.kind!=='removed')?.path||state.snapshot.files[0]?.path;
-  state.file=null;renderTree();renderGate();
+  state.file=null;await refreshComparison();renderTree();renderGate();
   if(state.path)await loadFile(state.path);else renderView();
 }
+async function refreshComparison(){
+  const history=state.project.commits, commit=history.find(c=>c.id===state.selectedCommitId)||history.find(c=>c.release_id===state.snapshot.release_id);
+  const base=commit?history.find(c=>c.id===commit.parent_id):history[0];
+  $('comparison-select').options[0].textContent=commit?'相对父提交':'相对上次提交';
+  state.comparison=$('comparison-select').value==='release'?state.snapshot.report:await api(snapshotPath()+'/compare'+(base?'?base_release='+enc(base.release_id):''));
+  $('commit-status').textContent=commit?'此版本已记录为「'+commit.message+'」':history.length?'最近提交：'+history[0].message:'尚无提交，可先记录当前文件集作为起点。';
+}
+$('comparison-select').addEventListener('change',run(async()=>{if(!state.snapshot)return;await refreshComparison();renderGate();renderView();}));
+on('record-commit',async()=>{
+  const projectId=state.project.id, releaseId=state.snapshot.release_id;
+  const project=await api('projects/'+enc(projectId)), head=project.commits[0];
+  const report=await api('projects/'+enc(projectId)+'/snapshots/'+enc(releaseId)+'/compare'+(head?'?base_release='+enc(head.release_id):''));
+  if(projectId!==state.project.id||releaseId!==state.snapshot.release_id)return;
+  state.commitDraft={projectId,release_id:releaseId,expected_parent:head?.id||null};
+  $('commit-message').value='';$('commit-error').textContent='';
+  $('commit-summary').textContent='选中版本 '+short(releaseId)+' · '+(head?'相对「'+head.message+'」':'首次提交')+' · '+report.changes.length+' 个文件变化。';
+  $('commit-save').disabled=!report.changes.length;$('commit-preview').replaceChildren();renderChanges($('commit-preview'),report,false);
+  if(!report.changes.length)$('commit-error').textContent='内容与上次提交一致，无需重复提交。';
+  $('commit-dialog').showModal();
+});
+$('commit-form').addEventListener('submit',run(async event=>{
+  event.preventDefault();const draft=state.commitDraft, message=$('commit-message').value.trim();
+  if(!message){$('commit-error').textContent='请填写本次修改的说明。';return;}
+  $('commit-save').disabled=true;
+  try{await api('projects/'+enc(draft.projectId)+'/commits','POST',{release_id:draft.release_id,expected_parent:draft.expected_parent,message});
+    $('commit-dialog').close();state.view='history';await refresh(draft.projectId);notice('已记录提交「'+message+'」。');
+  }catch(error){$('commit-error').textContent=error.message+'；关闭后重新打开可更新对比。';}finally{$('commit-save').disabled=false;}
+}));
 function renderTree(){
   const tree=$('file-tree');tree.replaceChildren();const query=$('file-filter').value.toLowerCase();
   $('file-count').textContent=state.snapshot?.files.length||0;
@@ -94,8 +123,10 @@ async function loadFile(path){
 }
 function renderGate(){
   const snap=state.snapshot, gate=$('gate');gate.replaceChildren();
+  $('record-commit').disabled=!snap||!has('editor')||state.project.commits.some(c=>c.release_id===snap.release_id);
   $('approve').disabled=true;$('publish').disabled=true;$('recover').hidden=true;$('publish').textContent='发布此版本';$('agent-read').disabled=!state.project?.active_release;
   if(!snap){
+    $('commit-status').textContent='先保存一个文件快照，再记录提交。';state.comparison=null;
     $('version-state').textContent='未发布';$('version-state').className='badge';
     $('change-count').textContent='0';$('check-count').textContent='';
     $('approval-note').textContent='先上传或同步文件，再提交审核。';
@@ -108,7 +139,7 @@ function renderGate(){
   const active=snap.release_id===state.project.active_release;
   const status=snap.revoked?'已撤销':active?'当前发布':snap.approver?'已审核':pass?'待审核':'阻止发布';
   $('version-state').textContent=status;$('version-state').className='badge '+(snap.revoked||!pass?'blocked':active?'pass':'review');
-  $('change-count').textContent=snap.report.changes.length;
+  $('change-count').textContent=(state.comparison||snap.report).changes.length;
   const title=el('div',undefined,'gate-title');title.append(badge(snap.verification.decision,pass?'pass':'blocked'),el('span',pass?'检查通过':'需要修复'));gate.append(title);
   gate.append(el('p',snap.report.assurance==='file_integrity_only'?'仅验证文件完整性。未声明业务约束；语义适用性仍须人工审核。':'验证已声明的业务约束与文件完整性。语义提示须由审核者确认。','gate-description muted'));
   $('check-count').textContent=snap.verification.tests.length+' 项';
@@ -162,11 +193,11 @@ function renderSheet(content,fragments){
   }
   content.append(el('p','显示有内容的单元格，最多 200 行 × 30 列 / 表。公式按原文展示，未执行计算。','fine'));
 }
-function renderChanges(content){
-  const changes=state.snapshot.report.changes;
-  if(!changes.length){content.append(empty('相对当前发布无内容变化','相同内容复用原文件修订；审批记录独立保留。'));return;}
-  content.append(el('p','与构建基线 '+(state.snapshot.report.base_release?short(state.snapshot.report.base_release):'空版本')+' 对比。语义提示来自确定性规则，供人工审核。','fine'));
-  for(const change of changes){const block=el('article',undefined,'change-file'),header=el('div',undefined,'change-header');const name=el('button',change.path);name.disabled=change.kind==='removed';name.addEventListener('click',run(async()=>{state.view='files';await loadFile(change.path);}));header.append(name,badge({added:'新增',modified:'修改',removed:'删除'}[change.kind]));block.append(header);
+function renderChanges(content,report=state.comparison||state.snapshot.report,interactive=true){
+  const changes=report.changes;
+  if(!changes.length){content.append(empty('没有文件内容变化','选中版本与对比基线的文件内容一致。'));return;}
+  content.append(el('p','与版本 '+(report.base_release?short(report.base_release):'空文件集')+' 对比。语义提示来自确定性规则，供人工审核。','fine'));
+  for(const change of changes){const block=el('article',undefined,'change-file'),header=el('div',undefined,'change-header');const name=el('button',change.path);name.type='button';name.disabled=!interactive||change.kind==='removed';name.addEventListener('click',run(async()=>{state.view='files';await loadFile(change.path);}));header.append(name,badge({added:'新增',modified:'修改',removed:'删除'}[change.kind]));block.append(header);
     for(const c of change.locations.slice(0,100)){const location=el('div',undefined,'change-location');if(c.before!==null)location.append(el('div','− '+c.before_locator+'  '+c.before,'diff-line before'));if(c.after!==null)location.append(el('div','+ '+c.after_locator+'  '+c.after,'diff-line after'));block.append(location,el('p',c.summary+' · '+(state.snapshot.approver?'已由 '+state.snapshot.approver+' 审核':'待审核'),'change-meaning'));}
     if(change.binary_changed)block.append(el('p','原文件字节发生变化，暂无可定位的文本差分。','small muted'));
     else if(!change.locations.length)block.append(el('p','原文件字节发生变化，但提取内容一致。变化可能来自格式或文档元数据，需检查原文件。','small muted'));
@@ -175,15 +206,18 @@ function renderChanges(content){
 }
 function renderImpact(content){
   content.append(el('h2','这次变化影响哪些文件'),el('p','沿项目声明的依赖传播。覆盖范围以这些依赖和校验规则为界。','fine'));
-  const paths=Object.entries(state.snapshot.report.impact);
-  if(!paths.length)content.append(empty('没有内容变化传播','当前版本与发布基线内容一致。'));
+  const paths=Object.entries((state.comparison||state.snapshot.report).impact);
+  if(!paths.length)content.append(empty('没有内容变化传播','选中版本与对比基线内容一致。'));
   for(const [file,path] of paths){const row=el('div',undefined,'impact-row');row.append(el('strong',file));const chain=el('div',undefined,'impact-path');path.forEach((p,i)=>{if(i)chain.append(el('i','→'));chain.append(el('span',p));});row.append(chain);content.append(row);}
 }
 function renderHistory(content){
-  content.append(el('h2','发布记录'),el('p','回退切换当前发布指针；原文件和历史版本仍保留。目录项目读取时还会检查实际文件是否匹配。','fine'));
+  content.append(el('h2','提交历史'),el('p','每次提交保存一个完整文件版本。点开说明，查看相对父提交的累计改动。','fine'));
+  if(!state.project.commits.length)content.append(el('p','还没有提交。查看改动后，点击“记录一次提交”。','small'));
+  for(const commit of state.project.commits){const row=el('article',undefined,'history-row'),button=el('button',commit.message);button.addEventListener('click',run(async()=>{$('comparison-select').value='commit';state.view='changes';await selectSnapshot(commit.release_id,commit.id);}));row.append(button,el('p',short(commit.id)+' · '+stamp(commit.created_at)+' · '+commit.author),el('p','父提交 '+short(commit.parent_id)+' · 文件版本 '+short(commit.release_id)));content.append(row);}
+  const snapshots=el('details');snapshots.append(el('summary','全部快照与发布记录（'+state.project.snapshots.length+'）'),el('p','自动保存保留在这里。回退仅切换发布指针，不恢复原文件。','fine'));content.append(snapshots);
   for(const snapshot of state.project.snapshots){const row=el('div',undefined,'history-row'),button=el('button',short(snapshot.release_id));button.title=snapshot.release_id;button.addEventListener('click',run(async()=>{await selectSnapshot(snapshot.release_id);}));row.append(button,document.createTextNode('　'),badge(snapshot.revoked?'已撤销':snapshot.release_id===state.project.active_release?'当前发布':snapshot.approver?'已审核':'候选版本'));
     row.append(el('p',stamp(snapshot.created_at)+' · 提交 '+snapshot.author+(snapshot.approver?' · 审核 '+snapshot.approver:'')));
-    if(has('publisher')&&!snapshot.revoked){const actions=el('div',undefined,'history-actions');if(snapshot.approver&&snapshot.release_id!==state.project.active_release){const rollback=el('button','回退至此版本');rollback.addEventListener('click',run(async()=>{await api('releases/'+enc(snapshot.release_id)+'/rollback','POST',{expected_active:state.project.active_release});notice('已切换发布指针。');await refresh();}));actions.append(rollback);}const revoke=el('button','撤销使用权限');revoke.addEventListener('click',run(async()=>{if(!confirm('撤销此版本后，绑定它的 Agent 读取会立即被拒绝。继续？'))return;await api('releases/'+enc(snapshot.release_id)+'/revoke','POST');notice('已撤销该版本。');await refresh();}));actions.append(revoke);row.append(actions);}content.append(row);
+    if(has('publisher')&&!snapshot.revoked){const actions=el('div',undefined,'history-actions');if(snapshot.approver&&snapshot.release_id!==state.project.active_release){const rollback=el('button','回退至此版本');rollback.addEventListener('click',run(async()=>{await api('releases/'+enc(snapshot.release_id)+'/rollback','POST',{expected_active:state.project.active_release});notice('已切换发布指针。');await refresh();}));actions.append(rollback);}const revoke=el('button','撤销使用权限');revoke.addEventListener('click',run(async()=>{if(!confirm('撤销此版本后，绑定它的 Agent 读取会立即被拒绝。继续？'))return;await api('releases/'+enc(snapshot.release_id)+'/revoke','POST');notice('已撤销该版本。');await refresh();}));actions.append(revoke);row.append(actions);}snapshots.append(row);
   }
 }
 on('connect',()=>{$('login-dialog').showModal();});on('empty-connect',()=>{$('login-dialog').showModal();});
@@ -205,7 +239,7 @@ for(const id of ['upload-files','upload-directory'])$(id).addEventListener('chan
   const files=[...event.target.files];if(!files.length)return;const body=new FormData();for(const file of files){const path=file.webkitRelativePath?file.webkitRelativePath.split('/').slice(1).join('/'):file.name;body.append('files',file,path);}
   const snap=await api(projectPath()+'/upload','POST',body);state.snapshot=snap;$('upload-dialog').close();event.target.value='';await refresh();notice('已建立候选版本，请查看变更和发布检查。');
 }));
-on('sync',async()=>{state.snapshot=await api(projectPath()+'/sync','POST');await refresh();notice('已同步目录并建立候选版本。');});
+on('sync',async()=>{state.snapshot=await api(projectPath()+'/sync','POST');state.view='changes';await refresh();notice('已保存目录快照。查看改动后，可记录一次提交。');});
 on('approve',async()=>{await api(snapshotPath()+'/approve','POST');await refresh();notice('已记录独立审核；等待发布者启用。');});
 on('publish',async()=>{const guarded=Boolean(state.snapshot.writeback);await api(snapshotPath()+(guarded?'/apply':'/activate'),'POST',{expected_active:state.project.active_release});await refresh();notice(guarded?'已将审核后的修改写回原文件并发布。':'版本已发布，Agent 可以建立新的读取会话。');});
 on('recover',async()=>{await api(snapshotPath()+'/recover','POST');await refresh();notice('已完成写回恢复，请查看当前版本状态。');});
@@ -263,7 +297,7 @@ async function refreshConnections(){
   const changed=JSON.stringify(data)!==JSON.stringify(state.connections);state.connections=data;
   $('connection-summary').hidden=false;
   const verified=data.agents.filter(a=>a.state==='verified'), configured=data.agents.filter(a=>a.configured);
-  $('connection-summary').textContent=verified.length?'已收到 '+verified.map(a=>a.name).join('、')+' 的受控工具请求 · 修改会进入审核流程':configured.length?'已安装 Agent 配置，等待在 Agent 中新开任务验证':'Agent 尚未连接 · 普通保存会被观察，写入前处理需要先连接';
+  $('connection-summary').textContent=verified.length?'已收到 '+verified.map(a=>a.name).join('、')+' 的受控工具请求 · 修改会进入审核流程':configured.length?'已安装 Agent 配置，等待在 Agent 中新开任务验证':'Agent 尚未连接 · 写入前处理需要先连接 Agent';
   if(changed&&$('setup-dialog').open&&!$('connection-step').hidden)renderConnections();
 }
 function renderConnections(){

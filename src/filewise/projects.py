@@ -91,6 +91,19 @@ class ProjectSpec(Model):
         return values
 
 
+class CommitRequest(Model):
+    release_id: ID
+    message: str = Field(min_length=1, max_length=500)
+    expected_parent: ID | None
+
+    @field_validator("message")
+    @classmethod
+    def meaningful_message(cls, value):
+        if not value.strip():
+            raise ValueError("Write a commit message")
+        return value.strip()
+
+
 def matches(path, patterns):
     return any(
         fnmatch.fnmatchcase(path, p) or (p.startswith("**/") and matches(path, [p[3:]])) for p in patterns
@@ -204,6 +217,11 @@ class Projects:
                     report_digest TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS file_sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
                     release_id TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS project_commits(id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    release_id TEXT NOT NULL REFERENCES project_snapshots(release_id),
+                    parent_id TEXT REFERENCES project_commits(id), message TEXT NOT NULL,
+                    author TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
 
     def _project(self, db, project_id, actor):
@@ -297,8 +315,64 @@ class Projects:
                 "scope_id": project["scope_id"],
                 "active_release": active[0] if active else None,
                 "snapshots": snapshots,
+                "commits": self._commits(db, project_id),
                 "spec": spec,
             }
+
+    def _commits(self, db, project_id):
+        # ponytail: read the full local history; paginate if it outgrows the workbench.
+        items = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM project_commits WHERE project_id=? ORDER BY rowid DESC", (project_id,)
+            )
+        ]
+        for index, item in enumerate(items):
+            parent = items[index + 1]["id"] if index + 1 < len(items) else None
+            if (
+                item["parent_id"] != parent
+                or digest({k: v for k, v in item.items() if k != "id"}) != item["id"]
+            ):
+                raise FilewiseError("Commit history integrity failed", 409)
+        return items
+
+    def commit(self, project_id, data, actor):
+        require(actor, "editor")
+        data = CommitRequest.model_validate(data)
+        with self.engine.connect(True) as db:
+            project, _, _, _, manifest = self._snapshot(db, project_id, data.release_id, actor)
+            history = self._commits(db, project_id)
+            head = history[0] if history else None
+            if data.expected_parent != (head["id"] if head else None):
+                raise FilewiseError("Commit history changed; refresh and review the comparison again", 409)
+            old = self._snapshot(db, project_id, head["release_id"], actor)[4] if head else {}
+            if {p: f["sha256"] for p, f in old.items()} == {p: f["sha256"] for p, f in manifest.items()}:
+                raise FilewiseError("No file changes since the last commit", 409)
+            item = {
+                "project_id": project_id,
+                "release_id": data.release_id,
+                "parent_id": data.expected_parent,
+                "message": data.message,
+                "author": actor.id,
+                "created_at": now(),
+            }
+            item = {"id": digest(item), **item}
+            db.execute("INSERT INTO project_commits VALUES(?,?,?,?,?,?,?)", tuple(item.values()))
+            self.engine._audit(db, project["scope_id"], actor, "project.committed", item)
+        return item
+
+    def compare(self, project_id, release_id, actor, base_release=None):
+        with self.engine.connect() as db:
+            _, row, _, bundle, manifest = self._snapshot(db, project_id, release_id, actor)
+            old, before = {}, {}
+            if base_release:
+                _, _, _, base, old = self._snapshot(db, project_id, base_release, actor)
+                before = base["state"]["objects"]
+        return {
+            **json.loads(row["report"]),
+            **self._compare_manifests(old, manifest, bundle["state"]["objects"], before, actor),
+            "base_release": base_release,
+        }
 
     def snapshot(self, project_id, actor, files=None, *, base_release=None, captured=False):
         require(actor, "editor")
@@ -436,6 +510,32 @@ class Projects:
                 "SELECT manifest FROM project_snapshots WHERE release_id=?", (base,)
             ).fetchone()
         old = json.loads(prior[0]) if prior else {}
+        before = self.engine.release(base, actor)["bundle"]["state"]["objects"] if base else {}
+        report = {
+            "base_release": base,
+            **self._compare_manifests(old, manifest, release["bundle"]["state"]["objects"], before, actor),
+            "skipped": skipped,
+            "assurance": "declared_business_checks" if spec.checks else "file_integrity_only",
+            "semantic_status": "review_required",
+            "dependency_basis": "reviewer_declared",
+            "verification": release["bundle"]["verification"],
+        }
+        with self.engine.connect(True) as db:
+            db.execute(
+                "INSERT INTO project_snapshots VALUES(?,?,?,?,?,?,?)",
+                (
+                    release["id"],
+                    project_id,
+                    canonical(manifest),
+                    canonical(report),
+                    actor.id,
+                    now(),
+                    digest(report),
+                ),
+            )
+        return self.inspect(project_id, release["id"], actor)
+
+    def _compare_manifests(self, old, manifest, state, before_objects, actor):
         changes = []
         for path in sorted(old.keys() | manifest.keys()):
             before, after = old.get(path), manifest.get(path)
@@ -456,38 +556,16 @@ class Projects:
         # Use declared dependencies for knowledge impact; no hidden completeness claim.
         from .engine import impact
 
-        state = release["bundle"]["state"]["objects"]
-        before_objects = self.engine.release(base, actor)["bundle"]["state"]["objects"] if base else {}
         affected = impact(state, [oid(c["path"]) for c in changes], before=before_objects)
         lookup = {v["object_id"]: p for p, v in {**old, **manifest}.items()}
-        report = {
-            "base_release": base,
+        return {
             "changes": changes,
-            "skipped": skipped,
             "impact": {
                 lookup.get(k, k): [lookup.get(i, i) for i in v]
                 for k, v in affected["paths"].items()
                 if k != "manifest"
             },
-            "assurance": "declared_business_checks" if spec.checks else "file_integrity_only",
-            "semantic_status": "review_required",
-            "dependency_basis": "reviewer_declared",
-            "verification": release["bundle"]["verification"],
         }
-        with self.engine.connect(True) as db:
-            db.execute(
-                "INSERT INTO project_snapshots VALUES(?,?,?,?,?,?,?)",
-                (
-                    release["id"],
-                    project_id,
-                    canonical(manifest),
-                    canonical(report),
-                    actor.id,
-                    now(),
-                    digest(report),
-                ),
-            )
-        return self.inspect(project_id, release["id"], actor)
 
     def _snapshot(self, db, project_id, release_id, actor):
         project = self._project(db, project_id, actor)

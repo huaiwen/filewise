@@ -28,7 +28,7 @@ from .models import (
     Scope,
     SourcePolicy,
 )
-from .projects import Projects, ProjectSpec, relative_path
+from .projects import CommitRequest, Projects, ProjectSpec, relative_path
 
 
 def load_tokens(path):
@@ -282,6 +282,10 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
     def watch_config(project_id: str, who=Depends(actor)):
         return middleware.config(project_id, who)
 
+    @app.post("/api/projects/{project_id}/commits", status_code=201)
+    def commit_project(project_id: str, data: CommitRequest, who=Depends(actor)):
+        return projects.commit(project_id, data, who)
+
     @app.put("/api/projects/{project_id}/watch")
     def configure_watch(project_id: str, data: WatchConfig, who=Depends(actor)):
         return middleware.configure(project_id, data, who)
@@ -309,6 +313,12 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
     @app.get("/api/projects/{project_id}/snapshots/{release_id}/preview")
     def preview_file(project_id: str, release_id: str, path: str, who=Depends(actor)):
         return projects.read(project_id, release_id, path, who, preview=True)
+
+    @app.get("/api/projects/{project_id}/snapshots/{release_id}/compare")
+    def compare_snapshot(
+        project_id: str, release_id: str, base_release: str | None = None, who=Depends(actor)
+    ):
+        return projects.compare(project_id, release_id, who, base_release)
 
     @app.post("/api/projects/{project_id}/snapshots/{release_id}/approve")
     def approve_snapshot(project_id: str, release_id: str, who=Depends(actor)):

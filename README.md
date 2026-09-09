@@ -21,6 +21,8 @@ uv run --no-sync filewise start
 
 之后，受支持的 Agent 工具在审核副本里修改，你回到工作台查看 **哪里变了 → 检查与影响 → 审核通过 → 写回原文件并发布**。同一 Agent 任务会持续看到自己的修改。普通 Excel 或编辑器直接保存原文件时，Filewise 也会在保存后记录变化。
 
+完成一轮修改后，在“变更”中查看累计差异，点击 **记录一次提交**，填写说明，再到 **提交历史** 回看。这一步保存版本与说明，不要求先审核；审核和写回仍可随后单独进行。首次使用可先把初始文件集记为第一条提交。
+
 **写入前处理需要接入 Agent。** 配置由 Filewise 的“连接”按钮完成，不需要手写 JSON；仅选择关注文件夹只能保证保存后的观察。已经打开的任务需重新加载项目配置。侧栏“Agent 连接”可查看状态、自检和断开，不会把“配置已安装”显示成“已接入”。
 
 当前原生受控连接支持 **macOS**，覆盖原生文件工具与前台 Shell。外部 MCP、后台进程、独立终端不经过这层钩子。Codex/Claude Code 已验证协议与实际钩子命令，Pi 另验证了安装版本的扩展运行时；未调用云模型。详细范围见 [接入与中间件说明](docs/middleware.md)。
@@ -38,9 +40,9 @@ uv run --no-sync filewise showcase
 
 打开 [Filewise 工作台](http://127.0.0.1:8765)。这是独立临时数据库中的合成项目，已经发布 100 kPa 的需求与 Excel 检验计划：
 
-1. 点击 **修改需求**：JSON 压力变为 120，Excel 仍为 100，检查 BLOCKED。
+1. 先点 **记录一次提交**，填写“初始检验资料”；再点击 **修改需求**：JSON 压力变为 120，Excel 仍为 100，检查 BLOCKED。
 2. 查看变更位置与“影响路径”；点击 **验证 Agent 读取**，原目录变化使旧发布读取返回 STALE。
-3. 点击 **修复检验计划**：Excel B2 改为 120，检查 PASS。
+3. 点击 **修复检验计划**：Excel B2 改为 120，检查 PASS。查看两次保存累计的改动，记录提交“将检验压力统一为 120 kPa”；提交历史中点开说明可回看。
 4. 右上角切换 **审核者**，审核通过；切换 **发布者**，发布此版本。
 5. 再验证 Agent 读取，得到新版本及文件来源、SHA-256 和读取凭据。
 
@@ -101,7 +103,26 @@ filewise agent search SESSION_ID 压力
 
 ## 用类似 Git 的方式管理知识
 
-文件快照对应提交，位置差分对应 diff，独立审核后发布，当前 release_id 对应可切换指针，历史版本不可变。回退指针保留历史；撤销则拒绝该版本的未来读取。本地目录每次读取还验证真实文件哈希，发生变化必须同步、审核并发布新版本。
+当前可运行的是 **查看改动 → 记录提交 → 查看历史**：
+
+- **快照**自动保存每次捕获的完整文件集；完成一轮修改后，选择其中一个版本并填写说明，记为一次**提交**。多次保存的累计改动按上次提交计算。
+- **变更**默认对比上次提交；历史中的提交对比它的父提交。也可切回构建时的发布基线，查看原来的审核报告。Excel 单元格、JSON 字段及声明依赖复用同一比较逻辑。
+- **提交历史**保留提交说明、作者、时间、父提交与原文件版本；自动快照在“全部快照与发布记录”中。内容未变化时拒绝重复提交；并发改变历史时要求刷新后重新核对。
+- **记录提交**不等于批准使用。草稿或检查失败的版本也可留档；独立审核、发布、受控写回和 Agent 读取门禁仍单独执行。
+
+每次提交包含所选快照中的全部关注文件，尚无逐文件/逐块暂存。已有数据库升级后保留全部快照，提交历史从用户首次记录开始。回退发布指针保留历史，不覆盖原文件。
+
+本地 CLI 对应命令如下，`PROJECT_ID` 和 `RELEASE_ID` 来自 `project status` / `project sync` 输出；用 `--db` 指向启动服务时的同一数据库：
+
+```bash
+filewise project status PROJECT_ID
+filewise project diff PROJECT_ID RELEASE_ID
+filewise project commit PROJECT_ID RELEASE_ID -m "初始资料" --expected-parent NONE
+filewise project log PROJECT_ID
+# 后续提交把 NONE 换成 log 中最新提交的 id
+```
+
+这些命令操作 Filewise 的本地知识历史，不会执行 Git commit 或向 GitHub 上传。
 
 这套流程已可运行；分支合并、远程 push/pull、自动消解知识冲突没有实现。Filewise 不替代 PLM/MES/QMS 的原始审批和事务。[TeamAI 评估](docs/teamai-assessment.md)将其归为 Agent 接入与团队协作层，借鉴配置分发、图谱来源与反馈；没有安装或自动接入上游代码。
 
@@ -187,7 +208,7 @@ node --check src/filewise/static/workspace.js
 uv build
 ```
 
-源码开发时可用 `uv sync --locked --all-extras`；若环境跳过可编辑安装的 `.pth`，使用上面的普通安装，或 `PYTHONPATH=src uv run --no-sync python -m unittest discover -s tests -v`。修改源码后，普通安装需重新执行 `uv sync --reinstall-package filewise-engine --no-editable --all-extras`。
+源码开发时可用 `uv sync --locked --all-extras`；若环境跳过可编辑安装的 `.pth`，使用上面的普通安装，或 `PYTHONPATH=src uv run --no-sync python -m unittest discover -s tests -v`。修改源码后，普通安装需重新执行 `uv sync --reinstall-package filewise-engine --no-editable --all-extras`，然后重启已有 Filewise 服务并刷新页面。
 
 测试用标准库 `unittest`，包括真实 SQLite 并发、权限/撤销、时间边界、原文锚点、HTTP 全流程、CLI 子进程和合成 Office/PDF 文件。[验证记录](docs/validation.md)区分本地已执行项目与尚未执行的 CI/Docker 检查。
 

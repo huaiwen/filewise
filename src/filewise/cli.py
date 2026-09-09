@@ -234,11 +234,18 @@ def main(argv=None):
     launch.add_argument("--tokens", type=Path, required=True)
     launch.add_argument("--url", default=os.environ.get("FILEWISE_URL", "http://127.0.0.1:8000"))
     launch.add_argument("executable", nargs=argparse.REMAINDER)
-    for name in ("status", "sync", "review", "publish"):
+    for name in ("status", "sync", "diff", "commit", "log", "review", "publish"):
         action = actions.add_parser(name)
         action.add_argument("project_id")
-        if name in ("review", "publish"):
+        if name in ("diff", "commit", "review", "publish"):
             action.add_argument("release_id")
+        if name == "diff":
+            action.add_argument(
+                "--base-release", help="Default: latest commit; empty history compares to empty"
+            )
+        if name == "commit":
+            action.add_argument("-m", "--message", required=True)
+            action.add_argument("--expected-parent", required=True, help="Commit ID from status/log, or NONE")
         if name == "publish":
             action.add_argument("--expected-active", default=None)
     commands.add_parser("demo", help="Run synthetic lifecycle in a fresh database")
@@ -416,6 +423,24 @@ def main(argv=None):
                     result = projects.detail(args.project_id, actor)
                 elif args.action == "sync":
                     result = projects.snapshot(args.project_id, actor)
+                elif args.action == "log":
+                    result = projects.detail(args.project_id, actor)["commits"]
+                elif args.action == "diff":
+                    history = projects.detail(args.project_id, actor)["commits"]
+                    base = args.base_release or (history[0]["release_id"] if history else None)
+                    result = projects.compare(args.project_id, args.release_id, actor, base)
+                elif args.action == "commit":
+                    result = projects.commit(
+                        args.project_id,
+                        {
+                            "release_id": args.release_id,
+                            "message": args.message,
+                            "expected_parent": None
+                            if args.expected_parent == "NONE"
+                            else args.expected_parent,
+                        },
+                        actor,
+                    )
                 elif args.action == "review":
                     result = projects.approve(args.project_id, args.release_id, actor)
                 else:
