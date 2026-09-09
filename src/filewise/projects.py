@@ -23,6 +23,7 @@ MAX_PROJECT_BYTES = 50 * 1024 * 1024
 DEFAULT_EXCLUDES = [
     ".git",
     ".filewise",
+    ".filewise-write-*",
     ".venv",
     "node_modules",
     "__pycache__",
@@ -76,6 +77,20 @@ class ProjectSpec(Model):
     dependencies: dict[str, list[str]] = Field(default_factory=dict, max_length=1000)
     checks: list[FileCheck] = Field(default_factory=list, max_length=40)
     excludes: list[str] = Field(default_factory=list, max_length=50)
+    includes: list[str] = Field(default_factory=lambda: ["**"], min_length=1, max_length=50)
+
+    @field_validator("includes")
+    @classmethod
+    def include_patterns(cls, values):
+        for value in values:
+            relative_path(value)
+        return values
+
+
+def matches(path, patterns):
+    return any(
+        fnmatch.fnmatchcase(path, p) or (p.startswith("**/") and matches(path, [p[3:]])) for p in patterns
+    )
 
 
 def excluded(path, patterns):
@@ -86,14 +101,14 @@ def excluded(path, patterns):
     )
 
 
-def scan(root, patterns):
+def scan(root, patterns, includes=None):
     try:
-        return _scan(root, patterns)
+        return _scan(root, patterns, includes or ["**"])
     except OSError as exc:
         raise FilewiseError("Project cannot be scanned consistently; check access and retry", 409) from exc
 
 
-def _scan(root, patterns):
+def _scan(root, patterns, includes):
     root = Path(root).absolute()
     if root.resolve(strict=True) != root:
         raise FilewiseError("Registered project path was replaced by a symlink", 409)
@@ -113,6 +128,8 @@ def _scan(root, patterns):
         for name in sorted(names):
             path = Path(current) / name
             relative = relative_path(path.relative_to(root).as_posix())
+            if not matches(relative, includes):
+                continue
             if excluded(relative, patterns):
                 skipped.append({"path": relative, "reason": "excluded"})
                 continue
@@ -279,7 +296,7 @@ class Projects:
                 "spec": spec,
             }
 
-    def snapshot(self, project_id, actor, files=None):
+    def snapshot(self, project_id, actor, files=None, *, base_release=None, captured=False):
         require(actor, "editor")
         with self.engine.connect() as db:
             project = self._project(db, project_id, actor)
@@ -291,16 +308,24 @@ class Projects:
         spec = ProjectSpec.model_validate_json(project["spec"])
         patterns = DEFAULT_EXCLUDES + spec.excludes
         if project["root"]:
-            if files is not None:
+            if files is not None and not captured:
                 raise FilewiseError("Local projects sync only their registered directory")
-            files, skipped = scan(project["root"], patterns)
+            if files is None:
+                files, skipped = scan(project["root"], patterns, spec.includes)
+            else:
+                skipped = []
         else:
             if files is None:
                 raise FilewiseError("Upload a complete file set for this snapshot")
             skipped = [{"path": p, "reason": "excluded"} for p in files if excluded(p, patterns)]
             files = {relative_path(p): body for p, body in files.items() if not excluded(p, patterns)}
-        if not files or len(files) > MAX_FILES or sum(map(len, files.values())) > MAX_PROJECT_BYTES:
-            raise FilewiseError("Snapshot must contain 1–1,000 files and at most 50 MiB", 413)
+        files = {
+            relative_path(p): b
+            for p, b in files.items()
+            if matches(p, spec.includes) and not excluded(p, patterns)
+        }
+        if len(files) > MAX_FILES or sum(map(len, files.values())) > MAX_PROJECT_BYTES:
+            raise FilewiseError("Snapshot permits at most 1,000 files and 50 MiB", 413)
         if any(len(body) > MAX_BYTES for body in files.values()):
             raise FilewiseError("File exceeds 10 MiB", 413)
         manifest, revisions, instant = {}, [], now()
@@ -397,7 +422,9 @@ class Projects:
         self.engine.add_revision(manifest_revision, actor)
         revisions.append(manifest_revision.id)
         release = self.engine.build(
-            BuildRequest(scope_id=project["scope_id"], valid_time=instant), actor, revision_ids=revisions
+            BuildRequest(scope_id=project["scope_id"], valid_time=instant, base_release=base_release),
+            actor,
+            revision_ids=revisions,
         )
         base = release["bundle"]["base_release"]
         with self.engine.connect() as db:
@@ -522,7 +549,7 @@ class Projects:
     def _live(self, project, manifest):
         if project["root"]:
             spec = json.loads(project["spec"])
-            files, _ = scan(project["root"], DEFAULT_EXCLUDES + spec["excludes"])
+            files, _ = scan(project["root"], DEFAULT_EXCLUDES + spec["excludes"], spec.get("includes"))
             hashes = {p: hashlib.sha256(body).hexdigest() for p, body in files.items()}
             expected = {p: f["sha256"] for p, f in manifest.items()}
             if hashes != expected:

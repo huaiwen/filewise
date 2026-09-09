@@ -138,3 +138,5 @@ dialog summary{font-size:12px;cursor:pointer;padding:10px 0}
 #identity-label{display:none}
 .tabs{gap:19px}
 }
+
+.watch-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 28px;background:var(--surface);border-bottom:1px solid var(--line);font-size:13px}.watch-bar[hidden]{display:none}.checkbox-label{display:flex;align-items:center;gap:10px}.checkbox-label input{width:auto}#watch-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere}

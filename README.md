@@ -23,23 +23,40 @@ uv run --no-sync filewise showcase
 
 演示身份只用于此临时实例。停止服务后演示数据删除；重启得到新的项目与凭据。日常服务不启用演示登录。
 
-## 管理自己的文件
+## 关注自己的文件：配置一次，两种处理
+
+安装后，在 Filewise 仓库执行下面一条命令，选择实际要关注的文件夹：
+
+```bash
+uv run --no-sync filewise follow "/absolute/path/to/资料" --include '*.xlsx' --include '*.md' --include '*.json'
+```
+
+打开终端显示的 [本地工作台](http://127.0.0.1:8000)，粘贴同一终端给出的访问凭据。默认**两种都启用**；左侧“关注设置”可以暂停或选择处理方式。省略 `--include` 表示管理该目录下所有未排除文件；配置、历史与凭据保存在所选目录的 `.filewise/` 中。重启只需 `filewise follow 同一目录`，会沿用配置。保持此服务运行才会自动关注，关闭浏览器不影响服务。
+
+**保存后自动分析**：照常让模型、Excel 或其他编辑器修改原文件。保存稳定约 1–3 秒后，工作台出现“发现文件变更”。点击即可看改了哪里、影响哪些已声明的依赖、哪些检查未通过。没有自动批准或发布，写入者未知时明确记为 unknown。
+
+**先审核、再写原文件**：另开终端启动模型任务，例如已安装 Codex CLI 时：
+
+```bash
+uv run --no-sync filewise run "/absolute/path/to/资料" -- codex exec --skip-git-repo-check -s workspace-write "修改当前目录里的文件，完成后说明改动"
+```
+
+模型在临时工作副本中修改文件，命令结束后工作台出现“有待审核修改”。查看差异与检查 → **审核通过** → **写回原文件并发布**。未批准、检查失败或原件再次变化时，拒绝写回。原件在批准前保持不变；Excel 等 Office 文件按审核时保存的原字节写回。
+
+受控启动当前支持 **macOS**，只限制新启动进程及其后代对所选原目录和 Filewise 私有状态的文件访问；不能接管已经运行的模型或外部 MCP 服务。普通保存后的观察可用于任意编辑工具。真实 Codex 云调用未纳入测试；进程隔离与写回已用本地命令验证。详细边界、恢复及 API 见 [中间件说明](docs/middleware.md)。
+
+首次配置时可再传 `--spec examples/project-contract.json` 声明文件依赖与业务约束，例如 Excel B2 必须等于 JSON 中的压力值。省略时 PASS 只表示文件集完整性，业务适用性仍需人工审核。范围、依赖和约束在创建时固定；`local-owner` 是人工操作身份，自动观察/受控候选由不同系统身份提交。
+
+高级的多项目、上传和分角色流程仍可用：
 
 ```bash
 uv run --no-sync filewise auth-init
+uv run --no-sync filewise project add /absolute/path/to/project --id inspection --name 检验资料 --spec examples/project-contract.json
+uv run --no-sync filewise project sync inspection
 uv run --no-sync filewise serve --tokens .filewise/tokens.json
 ```
 
-打开 [文件工作台](http://127.0.0.1:8000)。使用令牌文件中对应身份的键连接：编辑者创建项目、上传完整文件集，审核者审查，发布者启用版本。令牌只在当前页面内存中。`local-agent` 是单独的受限凭据，只能用于已发布文件网关。
-
-本地目录由可信操作员注册，再在工作台点击同步。网页不能指定任意服务器目录：
-
-```bash
-uv run --no-sync filewise project add /absolute/path/to/project --id inspection --name 检验资料 --spec examples/project-contract.json
-uv run --no-sync filewise project sync inspection
-```
-
-`--spec` 可省略；此时 PASS 只表示文件集完整性，业务适用性仍需人工审核。项目的依赖和检查契约在创建时固定。上传是完整文件集替换，未包含的文件会进入删除变更；历史原件保留。
+网页创建项目后可上传完整文件集；本地目录需在 CLI 显式注册，网页不能选择任意服务器路径。分别使用编辑、审核和发布凭据操作。上传时未包含的旧文件作为删除变更接受审核，历史原件保留。
 
 Agent 接口不读取本地数据库。下面假设安装后的 `filewise` 已在 PATH 中；在仓库内可用 `uv run --no-sync filewise` 代替：
 

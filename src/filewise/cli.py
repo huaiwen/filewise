@@ -23,6 +23,94 @@ from .models import (
 )
 
 
+def followed_project(root):
+    """Open only the explicitly selected folder's local Filewise state."""
+    from .middleware import Middleware
+    from .projects import Projects
+
+    root = root.resolve(strict=True)
+    state = root / ".filewise"
+    if state.is_symlink() or (state / "filewise.db").is_symlink():
+        raise FilewiseError("Filewise state must not be a symlink")
+    if not (state / "filewise.db").is_file():
+        raise FilewiseError("Run filewise follow for this folder first")
+    projects = Projects(Engine(state / "filewise.db"))
+    actor = Actor(id="local-owner", roles={"reader", "editor", "reviewer", "publisher"})
+    with projects.engine.connect() as db:
+        project = projects._project(db, "workspace", actor)
+    if project["root"] != str(root):
+        raise FilewiseError("Registered directory does not match this folder")
+    return Middleware(projects), actor
+
+
+def follow(args):
+    import uvicorn
+
+    from .api import create_app, load_tokens
+    from .middleware import Middleware, WatchConfig
+    from .projects import ALL_ROLES, Projects
+
+    root = args.root.resolve(strict=True)
+    if not root.is_dir():
+        raise FilewiseError("Select a directory to follow")
+    state = root / ".filewise"
+    if state.is_symlink():
+        raise FilewiseError("Filewise state must not be a symlink")
+    state.mkdir(mode=0o700, exist_ok=True)
+    for name in ("filewise.db", "tokens.json", ".gitignore"):
+        if (state / name).is_symlink():
+            raise FilewiseError("Filewise state must not contain symlinks")
+    (state / ".gitignore").write_text("*\n", encoding="utf-8")
+    engine = Engine(state / "filewise.db")
+    projects = Projects(engine)
+    owner = Actor(id="local-owner", roles=ALL_ROLES)
+    with engine.connect() as db:
+        exists = db.execute("SELECT 1 FROM projects WHERE id='workspace'").fetchone()
+    if not exists:
+        spec = json.loads(args.spec.read_text()) if args.spec else {}
+        spec = {**spec, "id": "workspace", "name": root.name}
+        if args.include:
+            spec["includes"] = args.include
+        projects.create(spec, owner, root)
+    else:
+        followed_project(root)
+        if args.spec or (
+            args.include
+            and projects.detail("workspace", owner)["spec"].get("includes", ["**"]) != args.include
+        ):
+            raise FilewiseError("This folder already has a saved scope; restart without --include/--spec")
+    middleware = Middleware(projects)
+    settings = middleware.config("workspace", owner)
+    if settings["baseline"] is None:
+        middleware.configure("workspace", WatchConfig(), owner)
+    token_file = state / "tokens.json"
+    if not token_file.exists():
+        tokens = {
+            secrets.token_urlsafe(32): owner.model_dump(mode="json"),
+            secrets.token_urlsafe(32): {"id": "local-agent", "roles": ["reader"], "audience": "agent"},
+        }
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(tokens, indent=2) + "\n")
+    tokens = load_tokens(token_file)
+    token = next(
+        (
+            key
+            for key, actor in tokens.items()
+            if actor.id == "local-owner" and actor.roles == ALL_ROLES and actor.audience == "operator"
+        ),
+        None,
+    )
+    if token is None:
+        raise FilewiseError("Local owner credential is missing from " + str(token_file))
+    print(
+        f"Filewise: http://127.0.0.1:{args.port}\n访问凭据（粘贴到工作台）: {token}\n关注目录: {root}\nCtrl+C 停止自动关注；再次运行同一命令可继续。",
+        file=sys.stderr,
+        flush=True,
+    )
+    uvicorn.run(create_app(engine, tokens), host="127.0.0.1", port=args.port, access_log=False)
+
+
 def main(argv=None):
     from . import agent
 
@@ -36,6 +124,21 @@ def main(argv=None):
     parser.add_argument("--roles", default="editor", help="Comma-separated local roles")
     commands = parser.add_subparsers(dest="command", required=True)
     agent.arguments(commands)
+    follow_parser = commands.add_parser(
+        "follow", help="Configure and watch a folder; serve its local workbench"
+    )
+    follow_parser.add_argument("root", type=Path)
+    follow_parser.add_argument(
+        "--include", action="append", help="Managed relative glob; repeat for more formats (first setup)"
+    )
+    follow_parser.add_argument("--spec", type=Path, help="Dependency/check contract JSON (first setup)")
+    follow_parser.add_argument("--port", type=int, default=8000)
+    guarded = commands.add_parser("run", help="Run a new command in a guarded working copy (macOS)")
+    guarded.add_argument("root", type=Path)
+    guarded.add_argument("executable", nargs=argparse.REMAINDER)
+    recovery = commands.add_parser("recover", help="Recover an interrupted writeback for a followed folder")
+    recovery.add_argument("root", type=Path)
+    recovery.add_argument("release_id")
     showcase = commands.add_parser("showcase", help="Serve a disposable synthetic workspace demo")
     showcase.add_argument("--port", type=int, default=8765)
     project = commands.add_parser("project", help="Trusted local project administration")
@@ -44,6 +147,7 @@ def main(argv=None):
     add.add_argument("root", type=Path)
     add.add_argument("--id", required=True)
     add.add_argument("--name", required=True)
+    add.add_argument("--include", action="append", help="Managed relative glob; repeat for more formats")
     add.add_argument("--spec", type=Path, help="Optional dependency and check contract JSON")
     launch = actions.add_parser("launch", help="Start a new Agent behind the macOS file boundary")
     launch.add_argument("project_id")
@@ -93,7 +197,22 @@ def main(argv=None):
     serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     try:
-        if args.command == "agent":
+        if args.command == "follow":
+            follow(args)
+            return 0
+        elif args.command in ("run", "recover"):
+            middleware, actor = followed_project(args.root)
+            if args.command == "run":
+                command = args.executable[1:] if args.executable[:1] == ["--"] else args.executable
+                result = middleware.guard("workspace", command, actor)
+                if result["release_id"]:
+                    print(
+                        "候选修改已保存，原文件未改变。回到 Filewise 工作台查看、审核并写回。",
+                        file=sys.stderr,
+                    )
+            else:
+                result = middleware.recover("workspace", args.release_id, actor)
+        elif args.command == "agent":
             result = agent.run(args)
         elif args.command == "showcase":
             import tempfile
@@ -157,6 +276,8 @@ def main(argv=None):
                     result = agent.launch(projects, args.project_id, actor, args.tokens, args.url, command)
                 elif args.action == "add":
                     spec = json.loads(args.spec.read_text()) if args.spec else {}
+                    if args.include:
+                        spec["includes"] = args.include
                     result = projects.create({**spec, "id": args.id, "name": args.name}, actor, args.root)
                 elif args.action == "status":
                     result = projects.detail(args.project_id, actor)
@@ -212,7 +333,7 @@ def main(argv=None):
             else:
                 result = getattr(engine, args.command)(args.release_id, actor)
         print(canonical(result))
-        if args.command == "project" and args.action == "launch":
+        if args.command == "run" or (args.command == "project" and args.action == "launch"):
             return result["exit_code"]
         return 0
     except (FilewiseError, ValidationError, OSError, ValueError) as exc:

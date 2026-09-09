@@ -3,6 +3,7 @@
 import hmac
 import json
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, UploadFile
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 
 from .engine import Engine, FilewiseError, require
 from .ingest import MAX_BYTES, ingest
+from .middleware import Middleware, WatchConfig
 from .models import (
     ActivateRequest,
     Actor,
@@ -132,12 +134,28 @@ class Boundary:
 
 def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
     tokens = validate_tokens(tokens)
+    projects = Projects(engine)
+    middleware = Middleware(projects)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        middleware.start()
+        try:
+            yield
+        finally:
+            middleware.close()
+
     app = FastAPI(
-        title="Filewise", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
+        lifespan=lifespan,
+        title="Filewise",
+        version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
     )
     app.add_middleware(Boundary, tokens=tokens)
     security = HTTPBearer()
-    projects = Projects(engine)
+    app.state.middleware = middleware
 
     def actor(request: Request, credentials=Depends(security)):
         return request.state.actor
@@ -198,6 +216,14 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
     def project_detail(project_id: str, who=Depends(actor)):
         return projects.detail(project_id, who)
 
+    @app.get("/api/projects/{project_id}/watch")
+    def watch_config(project_id: str, who=Depends(actor)):
+        return middleware.config(project_id, who)
+
+    @app.put("/api/projects/{project_id}/watch")
+    def configure_watch(project_id: str, data: WatchConfig, who=Depends(actor)):
+        return middleware.configure(project_id, data, who)
+
     @app.post("/api/projects/{project_id}/sync", status_code=201)
     def sync_project(project_id: str, who=Depends(actor)):
         return projects.snapshot(project_id, who)
@@ -215,7 +241,8 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
 
     @app.get("/api/projects/{project_id}/snapshots/{release_id}")
     def project_snapshot(project_id: str, release_id: str, who=Depends(actor)):
-        return projects.inspect(project_id, release_id, who)
+        snapshot = projects.inspect(project_id, release_id, who)
+        return {**snapshot, "writeback": middleware.proposal(release_id)}
 
     @app.get("/api/projects/{project_id}/snapshots/{release_id}/preview")
     def preview_file(project_id: str, release_id: str, path: str, who=Depends(actor)):
@@ -228,6 +255,14 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
     @app.post("/api/projects/{project_id}/snapshots/{release_id}/activate")
     def activate_snapshot(project_id: str, release_id: str, data: ActivateRequest, who=Depends(actor)):
         return projects.activate(project_id, release_id, data.expected_active, who)
+
+    @app.post("/api/projects/{project_id}/snapshots/{release_id}/apply")
+    def apply_snapshot(project_id: str, release_id: str, data: ActivateRequest, who=Depends(actor)):
+        return middleware.apply(project_id, release_id, data.expected_active, who)
+
+    @app.post("/api/projects/{project_id}/snapshots/{release_id}/recover")
+    def recover_snapshot(project_id: str, release_id: str, who=Depends(actor)):
+        return middleware.recover(project_id, release_id, who)
 
     @app.post("/api/projects/{project_id}/sessions", status_code=201)
     def open_session(project_id: str, release_id: str | None = None, who=Depends(actor)):

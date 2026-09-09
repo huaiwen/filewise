@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files'};
+const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files', watch:null, seenEvent:null};
 const el = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
 const short = value => value ? value.slice(0,10) : '—';
 const stamp = value => new Date(value).toLocaleString('zh-CN',{hour12:false});
@@ -46,6 +46,8 @@ async function selectProject(id){
   $('project-description').textContent=state.project.active_release?'当前发布 '+short(state.project.active_release)+' · 新变更经过检查与审核后启用':'尚未发布 · 上传或同步文件后创建首个候选版本';
   $('upload').disabled=!has('editor')||state.project.source!=='upload';
   $('sync').disabled=!has('editor')||state.project.source!=='local';
+  $('watch-settings').disabled=state.project.source!=='local';
+  await refreshWatch();
   $('snapshot-select').replaceChildren();
   for(const s of state.project.snapshots){const o=el('option',stamp(s.created_at)+' · '+short(s.release_id)+(s.release_id===state.project.active_release?' · 当前':''));o.value=s.release_id;$('snapshot-select').append(o);}
   if(state.project.snapshots.length){
@@ -59,6 +61,7 @@ async function selectSnapshot(id){
   $('agent-result').replaceChildren(el('p','点击验证以检查此刻的读取资格。','fine'));
   state.snapshot=await api(projectPath()+'/snapshots/'+enc(id));
   $('snapshot-select').value=id;
+  if(state.watch?.last_event?.release_id===id){state.seenEvent=id;$('watch-event').hidden=true;}
   if(!state.snapshot.files.some(f=>f.path===state.path))state.path=state.snapshot.report.changes.find(c=>c.kind!=='removed')?.path||state.snapshot.files[0]?.path;
   state.file=null;renderTree();renderGate();
   if(state.path)await loadFile(state.path);else renderView();
@@ -87,7 +90,7 @@ async function loadFile(path){
 }
 function renderGate(){
   const snap=state.snapshot, gate=$('gate');gate.replaceChildren();
-  $('approve').disabled=true;$('publish').disabled=true;$('agent-read').disabled=!state.project?.active_release;
+  $('approve').disabled=true;$('publish').disabled=true;$('recover').hidden=true;$('publish').textContent='发布此版本';$('agent-read').disabled=!state.project?.active_release;
   if(!snap){
     $('version-state').textContent='未发布';$('version-state').className='badge';
     $('change-count').textContent='0';$('check-count').textContent='';
@@ -109,6 +112,14 @@ function renderGate(){
   for(const issue of snap.verification.issues){gate.append(el('p',issue.reason+(issue.object_id?' · '+issue.object_id:''),'fine'));}
   $('approve').disabled=!has('reviewer')||!pass||snap.revoked||Boolean(snap.approver);
   $('publish').disabled=!has('publisher')||!pass||snap.revoked||!snap.approver||active;
+  if(snap.writeback){
+    const recovery=['applying','recovery_required'].includes(snap.writeback.status);
+    $('publish').textContent=snap.writeback.status==='applied'?'已写回原文件':'写回原文件并发布';
+    $('publish').disabled||=snap.writeback.status!=='pending';
+    $('recover').hidden=!recovery||!has('publisher');
+    gate.append(el('p',recovery?'写回尚未完成，需要恢复后继续。':snap.writeback.status==='applied'?'这次修改已经写回原件。':'模型仅修改了副本；审核通过后才写回原件。','fine'));
+    if(snap.writeback.error)gate.append(el('p',snap.writeback.error,'fine'));
+  }
   $('approval-note').textContent=snap.approver?'审核人 '+snap.approver+' · 发布者可启用此版本。':'需要独立审核。提交者不能审核自己的版本。';
   if(snap.report.skipped.length)gate.append(el('p','已排除 '+snap.report.skipped.length+' 个路径：'+snap.report.skipped.slice(0,5).map(s=>s.path).join('、'),'fine'));
 }
@@ -119,6 +130,7 @@ function renderView(){
   if(state.view==='changes'){renderChanges(content);return;}
   if(state.view==='impact'){renderImpact(content);return;}
   if(state.view==='history'){renderHistory(content);return;}
+  if(!state.snapshot.files.length){content.append(empty('文件集为空','查看“变更”中的删除记录。空文件集无法发布。'));return;}
   if(!state.file){content.append(empty('正在读取文件…',''));return;}
   const file=state.file, title=el('div',undefined,'file-title'), names=el('div');
   names.append(el('h2',file.path),el('p','版本 '+short(state.snapshot.release_id)+' · 审核预览'));
@@ -191,7 +203,8 @@ for(const id of ['upload-files','upload-directory'])$(id).addEventListener('chan
 }));
 on('sync',async()=>{state.snapshot=await api(projectPath()+'/sync','POST');await refresh();notice('已同步目录并建立候选版本。');});
 on('approve',async()=>{await api(snapshotPath()+'/approve','POST');await refresh();notice('已记录独立审核；等待发布者启用。');});
-on('publish',async()=>{await api(snapshotPath()+'/activate','POST',{expected_active:state.project.active_release});await refresh();notice('版本已发布，Agent 可以建立新的读取会话。');});
+on('publish',async()=>{const guarded=Boolean(state.snapshot.writeback);await api(snapshotPath()+(guarded?'/apply':'/activate'),'POST',{expected_active:state.project.active_release});await refresh();notice(guarded?'已将审核后的修改写回原文件并发布。':'版本已发布，Agent 可以建立新的读取会话。');});
+on('recover',async()=>{await api(snapshotPath()+'/recover','POST');await refresh();notice('已完成写回恢复，请查看当前版本状态。');});
 on('agent-read',async()=>{
   const result=$('agent-result');result.replaceChildren(el('p','正在验证当前发布与实际文件…'));
   const token=state.demo?.identities.agent.token||state.token;
@@ -199,6 +212,37 @@ on('agent-read',async()=>{
     result.replaceChildren(badge('PASS · 已获准读取','pass'),el('p',state.path+' · '+(data.text!==null?'文本':'原文件 + 定位片段')),el('pre','release  '+short(session.release_id)+'\nsource   '+short(data.source_id)+'\nsha256   '+data.sha256+'\nactor    '+data.receipt.actor+'\nreceipt  '+short(data.receipt.id)),el('p','文件内容已通过专用网关读取，操作记录进入审计。','fine'));
   }catch(error){result.replaceChildren(badge('拒绝读取','blocked'),el('p',error.message));}
 });
+async function refreshWatch(){
+  const project=state.project;
+  $('watch-bar').hidden=project?.source!=='local';
+  if(project?.source!=='local'){state.watch=null;return;}
+  const watch=await api('projects/'+enc(project.id)+'/watch');
+  if(state.project?.id!==project.id)return;
+  state.watch=watch;
+  const config=watch.config;
+  $('watch-status').textContent=watch.error?'关注异常：'+watch.error:!config.enabled?'关注已暂停':!watch.worker_running?'关注服务未运行':config.mode==='guard'?'受控修改已启用':'正在关注文件 · 保存后自动分析'+(config.mode==='both'?' · 受控修改可用':'');
+  const event=watch.last_event;
+  $('watch-event').hidden=!event||state.seenEvent===event.release_id||state.snapshot?.release_id===event.release_id;
+  if(event)$('watch-event').textContent=(event.kind==='before_write'?'有待审核修改':'发现文件变更')+' · '+event.paths.length+' 个文件 · 查看';
+}
+on('watch-settings',async()=>{
+  await refreshWatch();$('watch-enabled').checked=state.watch.config.enabled;$('watch-mode').value=state.watch.config.mode;
+  $('watch-save').disabled=!has('editor');$('watch-enabled').disabled=!has('editor');$('watch-mode').disabled=!has('editor');
+  $('watch-scope').textContent='关注范围：'+(state.project.spec.includes||['**']).join('、')+'。范围在首次 follow --include 时设定；默认排除凭据、.git 和 .filewise。';
+  $('watch-dialog').showModal();
+});
+$('watch-form').addEventListener('submit',run(async event=>{
+  event.preventDefault();await api(projectPath()+'/watch','PUT',{...state.watch.config,enabled:$('watch-enabled').checked,mode:$('watch-mode').value});
+  $('watch-dialog').close();await refreshWatch();notice('关注设置已保存。');
+}));
+on('watch-event',async()=>{
+  const id=state.watch.last_event.release_id;await refresh();await selectSnapshot(id);state.view='changes';renderView();
+});
+let watching=false;
+setInterval(async()=>{
+  if(watching||document.hidden||!state.token||state.project?.source!=='local')return;
+  watching=true;try{await refreshWatch();}catch(error){$('watch-status').textContent='无法连接关注服务：'+error.message;}finally{watching=false;}
+},2000);
 async function demoStep(step){
   if(!has('editor'))throw new Error('请先将演示身份切换为编辑者。');
   state.snapshot=await api('demo/'+step,'POST');state.path='requirement.json';await refresh(state.demo.project_id);state.view='changes';renderView();notice(step==='change'?'需求已改为 120 kPa；检验计划仍为 100，发布被阻止。':'Excel 检验值已修复为 120。请切换审核者确认，再由发布者启用。');
