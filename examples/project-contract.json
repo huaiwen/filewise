@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "inspection.xlsx": ["requirement.json"],
+    "delivery.md": ["inspection.xlsx"]
+  },
+  "checks": [
+    {
+      "id": "pressure-match",
+      "file": "inspection.xlsx",
+      "pointer": "sheet:1/cell:B2",
+      "reference_file": "requirement.json",
+      "reference_pointer": "/pressure_kpa"
+    }
+  ]
+}

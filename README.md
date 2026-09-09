@@ -1,38 +1,79 @@
 # Filewise
 
-**有证据约束的企业知识计算与发布内核。** 将已审核的业务对象、约束与依赖编译成不可变发布包，经过回归检查和独立审批，再供人员、系统或 Agent 固定版本读取。
+**位于 Agent、人员与真实文件之间的知识版本与发布层。** 文件变化后，定位改动、检查依赖影响、验证业务约束，经独立审核发布，再按固定版本提供给 Agent。
 
-本地单租户预览版，Python 3.11+、SQLite、FastAPI；无需模型、向量库、Node 服务或外部账号。全部演示和测试使用合成资料。
+本地单租户实现：Python 3.11+、SQLite、FastAPI、浏览器文件工作台与认证 CLI。无需模型、向量库、Node 服务或外部账号；演示和测试全部使用合成资料。
 
-## 运行
+## 直接体验
 
-在本仓库目录执行，需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
-
-```bash
-uv sync --locked --no-editable
-uv run --no-sync filewise --db .filewise/demo.db demo
-uv run --no-sync filewise auth-init
-uv run --no-sync filewise --db .filewise/demo.db serve --tokens .filewise/tokens.json
-```
-
-打开 <http://127.0.0.1:8000>。在本地打开 `.filewise/tokens.json`，选择 `local-reader` 对应的键作为访问令牌。页面不会持久保存令牌。编辑、审批和发布分别使用 `local-editor`、`local-reviewer`、`local-publisher` 的令牌；服务器不接受客户端声明角色。
-
-`demo` 要求数据库中不存在 `demo` 范围，重复运行会拒绝覆盖。它完成以下流程，并输出每个发布 ID：
-
-1. 发布 100 kPa 的合成规则及操作程序。
-2. 只将规则改为 120 kPa：影响传递至程序，一致性检查 **BLOCKED**。
-3. 将程序同步改为 120 kPa：检查 **PASS**，独立审批并激活。
-4. 回滚激活指针至 100 kPa；已固定的新版本仍返回 120 kPa。
-
-回滚不等于撤销。撤销发布包、撤销其修订、撤权、来源失效或超出有效期，会阻止后续固定版本读取。
-
-安装 PDF/Office 解析能力：
+在本仓库执行：
 
 ```bash
 uv sync --locked --all-extras --no-editable
+uv run --no-sync filewise showcase
 ```
 
-基础安装支持 UTF-8 TXT、Markdown、CSV；可选解析支持 PDF 文本、DOCX 段落/表格、XLSX 单元格、PPTX 文本/表格。坐标由解析器生成，原始字节保存在本地 SQLite。没有 OCR、图纸理解、音视频处理或自动业务语义抽取。扫描 PDF 无文本时明确拒绝。
+打开 [Filewise 工作台](http://127.0.0.1:8765)。这是独立临时数据库中的合成项目，已经发布 100 kPa 的需求与 Excel 检验计划：
+
+1. 点击 **修改需求**：JSON 压力变为 120，Excel 仍为 100，检查 BLOCKED。
+2. 查看变更位置与“影响路径”；点击 **验证 Agent 读取**，原目录变化使旧发布读取返回 STALE。
+3. 点击 **修复检验计划**：Excel B2 改为 120，检查 PASS。
+4. 右上角切换 **审核者**，审核通过；切换 **发布者**，发布此版本。
+5. 再验证 Agent 读取，得到新版本及文件来源、SHA-256 和读取凭据。
+
+演示身份只用于此临时实例。停止服务后演示数据删除；重启得到新的项目与凭据。日常服务不启用演示登录。
+
+## 管理自己的文件
+
+```bash
+uv run --no-sync filewise auth-init
+uv run --no-sync filewise serve --tokens .filewise/tokens.json
+```
+
+打开 [文件工作台](http://127.0.0.1:8000)。使用令牌文件中对应身份的键连接：编辑者创建项目、上传完整文件集，审核者审查，发布者启用版本。令牌只在当前页面内存中。`local-agent` 是单独的受限凭据，只能用于已发布文件网关。
+
+本地目录由可信操作员注册，再在工作台点击同步。网页不能指定任意服务器目录：
+
+```bash
+uv run --no-sync filewise project add /absolute/path/to/project --id inspection --name 检验资料 --spec examples/project-contract.json
+uv run --no-sync filewise project sync inspection
+```
+
+`--spec` 可省略；此时 PASS 只表示文件集完整性，业务适用性仍需人工审核。项目的依赖和检查契约在创建时固定。上传是完整文件集替换，未包含的文件会进入删除变更；历史原件保留。
+
+Agent 接口不读取本地数据库。下面假设安装后的 `filewise` 已在 PATH 中；在仓库内可用 `uv run --no-sync filewise` 代替：
+
+```bash
+# FILEWISE_TOKEN 由管理员以环境变量提供，使用 audience=agent 的凭据
+export FILEWISE_URL=http://127.0.0.1:8000
+filewise agent open inspection
+filewise agent ls SESSION_ID
+filewise agent read SESSION_ID requirement.json
+filewise agent search SESSION_ID 压力
+```
+
+支持 macOS 新进程文件隔离启动。完整操作、Codex 接入和边界检查见 [Agent 使用说明](docs/agent.md)。
+
+## 文件格式与变更定位
+
+| 文件 | 定位与比较 |
+| --- | --- |
+| UTF-8 文本、Markdown、代码 | 文本行对齐，减少插入一行导致整篇误报 |
+| JSON | 类型敏感的 JSON Pointer 变化与字段检查 |
+| CSV | 行/列坐标 |
+| Excel XLSX | 工作表/单元格、值与公式原文；公式不执行 |
+| Word DOCX | 段落与表格坐标 |
+| PowerPoint PPTX | 幻灯片/文本框与表格坐标 |
+| PDF | 文本页码，未做 OCR |
+| 其他二进制或无法抽取的文档 | 保存原字节、哈希与版本，明确提示暂无文本定位 |
+
+基础安装提供文本/CSV；`--all-extras` 安装 PDF/Office 解析器。XLS 等旧二进制 Office、图像、图纸、音视频目前仅管理原件；没有自动业务语义理解。数值、公式、约束措辞变化是确定性审核提示，业务影响依据显式依赖与断言。
+
+## 用类似 Git 的方式管理知识
+
+文件快照对应提交，位置差分对应 diff，独立审核后发布，当前 release_id 对应可切换指针，历史版本不可变。回退指针保留历史；撤销则拒绝该版本的未来读取。本地目录每次读取还验证真实文件哈希，发生变化必须同步、审核并发布新版本。
+
+这套流程已可运行；分支合并、远程 push/pull、自动消解知识冲突没有实现。Filewise 不替代 PLM/MES/QMS 的原始审批和事务。[TeamAI 评估](docs/teamai-assessment.md)将其归为 Agent 接入与团队协作层，借鉴配置分发、图谱来源与反馈；没有安装或自动接入上游代码。
 
 ## 实际资料如何进入内核
 
@@ -101,9 +142,9 @@ print(engine.overview(reader))
 # print(engine.context(release_id, ["procedure"], reader))
 ```
 
-Python API 和 CLI 是可信本地操作接口，身份由调用者提供；它们不是抵御本机数据库管理员的认证边界。HTTP 身份只由服务端配置决定。
+Python API 和本地管理 CLI 是可信操作接口；`filewise agent` 则只使用 HTTP 认证网关。HTTP 身份由服务端固定，Agent 凭据不能访问操作员的草稿接口。数据库管理员仍在可信边界内。
 
-完整请求模型和端点见带认证的 `/api/openapi.json`，或 [API 文档](docs/api.md)。控制台提供范围、文件导入、修订提交/审核、状态判定、构建、审批、发布及固定版本读取。
+完整请求模型和端点见带认证的 `/api/openapi.json`，或 [API 文档](docs/api.md)。主界面提供项目与文件工作流；`/admin` 保留底层范围、修订和发布控制台。
 
 ## 测试与打包
 
@@ -112,6 +153,7 @@ uv sync --locked --all-extras --no-editable
 uv run --no-sync ruff check src tests
 uv run --no-sync ruff format --check src tests
 uv run --no-sync python -m unittest discover -s tests -v
+node --check src/filewise/static/workspace.js
 uv build
 ```
 
@@ -133,4 +175,4 @@ docker build -t filewise .
 
 Git、sdist 和 Docker 均限定仓库内容。`.filewise`、数据库、令牌、环境配置和本地工作记录被排除。合成示例位于 `examples/`；没有复制任何父目录业务材料。源码包使用显式文件白名单。
 
-[架构与状态语义](docs/architecture.md) · [安全边界](docs/security.md) · [REST API](docs/api.md)
+[架构与状态语义](docs/architecture.md) · [安全边界](docs/security.md) · [REST API](docs/api.md) · [Agent 接入](docs/agent.md) · [TeamAI 评估](docs/teamai-assessment.md)

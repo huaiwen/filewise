@@ -125,7 +125,7 @@ class APITests(unittest.TestCase):
     def test_console_and_openapi_are_packaged(self):
         page = self.client.get("/")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("知识发布控制台", page.text)
+        self.assertIn("文件工作台", page.text)
         self.assertIn("script-src 'self'", page.headers["Content-Security-Policy"])
         self.assertEqual(self.client.get("/console.js").status_code, 200)
         self.assertEqual(self.client.get("/console.css").status_code, 200)
@@ -144,7 +144,7 @@ class APITests(unittest.TestCase):
         token_path = Path(self.temp.name) / "tokens.json"
         auth = run("auth-init", "--out", str(token_path))
         self.assertEqual(auth.returncode, 0, auth.stderr)
-        self.assertEqual(len(json.loads(token_path.read_text())), 4)
+        self.assertEqual(len(json.loads(token_path.read_text())), 5)
         self.assertNotEqual(run("auth-init", "--out", str(token_path)).returncode, 0)
         if os.name != "nt":
             self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)

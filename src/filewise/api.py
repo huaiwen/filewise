@@ -2,6 +2,7 @@
 
 import hmac
 import json
+import re
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, UploadFile
@@ -23,6 +24,7 @@ from .models import (
     Scope,
     SourcePolicy,
 )
+from .projects import Projects, ProjectSpec, relative_path
 
 
 def load_tokens(path):
@@ -42,10 +44,10 @@ def validate_tokens(tokens):
         ):
             raise ValueError("Tokens must be at least 32 ASCII characters without whitespace")
         actor = Actor.model_validate(actor)
-        if actor.id in identities and identities[actor.id] != actor.roles:
+        if actor.id in identities and identities[actor.id] != (actor.roles, actor.audience):
             raise ValueError("Each actor ID must have one consistent role set")
         result[token] = actor
-        identities[actor.id] = actor.roles
+        identities[actor.id] = (actor.roles, actor.audience)
     return result
 
 
@@ -95,6 +97,18 @@ class Boundary:
                 {"detail": "Valid bearer token required"}, 401, headers={"WWW-Authenticate": "Bearer"}
             )(scope, receive, secured_send)
         scope.setdefault("state", {})["actor"] = actor
+        # Agent credentials cannot reach draft evidence through the operator/kernel APIs.
+        if actor.audience == "agent" and not (
+            (scope["method"] == "GET" and scope["path"] in ("/api/me", "/api/projects"))
+            or (scope["method"] == "POST" and re.fullmatch(r"/api/projects/[^/]+/sessions", scope["path"]))
+            or (
+                scope["method"] == "GET"
+                and re.fullmatch(r"/api/sessions/[^/]+(?:/read|/search)?", scope["path"])
+            )
+        ):
+            return await JSONResponse(
+                {"detail": "Agent credentials may only use the released file gateway"}, 403
+            )(scope, receive, secured_send)
         body = bytearray()
         while True:
             message = await receive()
@@ -116,13 +130,14 @@ class Boundary:
         await self.app(scope, bounded_receive, secured_send)
 
 
-def create_app(engine: Engine, tokens: dict) -> FastAPI:
+def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
     tokens = validate_tokens(tokens)
     app = FastAPI(
         title="Filewise", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
     )
     app.add_middleware(Boundary, tokens=tokens)
     security = HTTPBearer()
+    projects = Projects(engine)
 
     def actor(request: Request, credentials=Depends(security)):
         return request.state.actor
@@ -141,7 +156,95 @@ def create_app(engine: Engine, tokens: dict) -> FastAPI:
 
     @app.get("/")
     def console():
+        return FileResponse(Path(__file__).with_name("static") / "workspace.html")
+
+    @app.get("/admin")
+    def admin_console():
         return FileResponse(Path(__file__).with_name("static") / "index.html")
+
+    @app.get("/workspace.js")
+    def workspace_script():
+        return FileResponse(Path(__file__).with_name("static") / "workspace.js")
+
+    @app.get("/workspace.css")
+    def workspace_style():
+        return FileResponse(Path(__file__).with_name("static") / "workspace.css")
+
+    @app.get("/demo")
+    def demo_info():
+        if showcase is None:
+            raise FilewiseError("Demo is not enabled on this server", 404)
+        return showcase.bootstrap()
+
+    @app.post("/api/demo/{step}")
+    def demo_step(step: str, who=Depends(actor)):
+        if showcase is None:
+            raise FilewiseError("Demo is not enabled on this server", 404)
+        require(who, "editor")
+        return showcase.step(step)
+
+    @app.get("/api/projects")
+    def project_list(who=Depends(actor)):
+        items = projects.list(who)
+        if who.audience == "agent":
+            return [{k: p[k] for k in ("id", "name", "active_release")} for p in items]
+        return items
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(data: ProjectSpec, who=Depends(actor)):
+        return projects.create(data, who)
+
+    @app.get("/api/projects/{project_id}")
+    def project_detail(project_id: str, who=Depends(actor)):
+        return projects.detail(project_id, who)
+
+    @app.post("/api/projects/{project_id}/sync", status_code=201)
+    def sync_project(project_id: str, who=Depends(actor)):
+        return projects.snapshot(project_id, who)
+
+    @app.post("/api/projects/{project_id}/upload", status_code=201)
+    def upload_project(project_id: str, files: list[UploadFile], who=Depends(actor)):
+        require(who, "editor")
+        data = {}
+        for file in files:
+            name = relative_path(file.filename or "")
+            if name in data:
+                raise FilewiseError("Duplicate uploaded path")
+            data[name] = file.file.read(MAX_BYTES + 1)
+        return projects.snapshot(project_id, who, data)
+
+    @app.get("/api/projects/{project_id}/snapshots/{release_id}")
+    def project_snapshot(project_id: str, release_id: str, who=Depends(actor)):
+        return projects.inspect(project_id, release_id, who)
+
+    @app.get("/api/projects/{project_id}/snapshots/{release_id}/preview")
+    def preview_file(project_id: str, release_id: str, path: str, who=Depends(actor)):
+        return projects.read(project_id, release_id, path, who, preview=True)
+
+    @app.post("/api/projects/{project_id}/snapshots/{release_id}/approve")
+    def approve_snapshot(project_id: str, release_id: str, who=Depends(actor)):
+        return projects.approve(project_id, release_id, who)
+
+    @app.post("/api/projects/{project_id}/snapshots/{release_id}/activate")
+    def activate_snapshot(project_id: str, release_id: str, data: ActivateRequest, who=Depends(actor)):
+        return projects.activate(project_id, release_id, data.expected_active, who)
+
+    @app.post("/api/projects/{project_id}/sessions", status_code=201)
+    def open_session(project_id: str, release_id: str | None = None, who=Depends(actor)):
+        return projects.session(project_id, who, release_id)
+
+    @app.get("/api/sessions/{session_id}")
+    def session_info(session_id: str, who=Depends(actor)):
+        return projects.session_info(session_id, who)
+
+    @app.get("/api/sessions/{session_id}/read")
+    def read_file(session_id: str, path: str, who=Depends(actor)):
+        session = projects.session_info(session_id, who)
+        return projects.read(session["project_id"], session["release_id"], path, who, session_id=session_id)
+
+    @app.get("/api/sessions/{session_id}/search")
+    def search_files(session_id: str, q: str, who=Depends(actor)):
+        return projects.search(session_id, q, who)
 
     @app.get("/console.js")
     def script():

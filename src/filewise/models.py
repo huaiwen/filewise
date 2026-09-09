@@ -27,6 +27,7 @@ class Model(BaseModel):
 class Actor(Model):
     id: ID
     roles: set[Role] = Field(min_length=1)
+    audience: Literal["operator", "agent"] = "operator"
 
 
 class Evidence(Model):

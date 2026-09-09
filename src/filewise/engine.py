@@ -528,12 +528,31 @@ class Engine:
                 "created_at": row["created_at"],
             }
 
-    def build(self, request: BuildRequest, actor):
+    def build(self, request: BuildRequest, actor, *, revision_ids=None):
         require(actor, "editor")
         # ponytail: a SQLite write snapshot serializes builds; use queued immutable snapshots for large estates.
         with self.connect(True) as db:
             scope = self._scope(db, request.scope_id, actor)
             state = self._resolve(db, scope, actor, request.valid_time, request.transaction_time or now())
+            if revision_ids is not None:
+                # Explicit file snapshots are previewed before human review; runtime still requires approval.
+                objects = {}
+                for revision_id in revision_ids:
+                    row = db.execute(
+                        "SELECT data FROM revisions WHERE id=? AND scope_id=?", (revision_id, scope["id"])
+                    ).fetchone()
+                    if not row:
+                        raise FilewiseError("Snapshot revision not found", 404)
+                    obj = json.loads(row[0])
+                    if obj["object_id"] in objects:
+                        raise FilewiseError("Duplicate snapshot object")
+                    objects[obj["object_id"]] = obj
+                state["objects"] = objects
+                state["issues"] = [
+                    {"object_id": oid, "reason": "UNKNOWN"}
+                    for oid in scope["required_objects"]
+                    if oid not in objects
+                ]
             before = {}
             base = request.base_release
             if not base:
@@ -548,6 +567,12 @@ class Engine:
                 before = base_bundle["state"]["objects"]
             changes = diff(before, state["objects"])
             affected = impact(state["objects"], [c["object_id"] for c in changes], before=before)
+            if revision_ids is not None:
+                # A removed file is reviewable when no current dependency or scope requirement needs it.
+                required = set(scope["required_objects"])
+                required.update(dep for obj in state["objects"].values() for dep in obj["depends_on"])
+                removed = before.keys() - state["objects"].keys() - required
+                affected["frontier"] = [f for f in affected["frontier"] if f["object_id"] not in removed]
             plan = compile(scope, state, affected, request.goal)
             # Validate all references, not only changed objects.
             for oid, obj in state["objects"].items():

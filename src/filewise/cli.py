@@ -24,6 +24,8 @@ from .models import (
 
 
 def main(argv=None):
+    from . import agent
+
     parser = argparse.ArgumentParser(
         prog="filewise", description="Evidence-bound knowledge and release control"
     )
@@ -33,6 +35,28 @@ def main(argv=None):
     )
     parser.add_argument("--roles", default="editor", help="Comma-separated local roles")
     commands = parser.add_subparsers(dest="command", required=True)
+    agent.arguments(commands)
+    showcase = commands.add_parser("showcase", help="Serve a disposable synthetic workspace demo")
+    showcase.add_argument("--port", type=int, default=8765)
+    project = commands.add_parser("project", help="Trusted local project administration")
+    actions = project.add_subparsers(dest="action", required=True)
+    add = actions.add_parser("add")
+    add.add_argument("root", type=Path)
+    add.add_argument("--id", required=True)
+    add.add_argument("--name", required=True)
+    add.add_argument("--spec", type=Path, help="Optional dependency and check contract JSON")
+    launch = actions.add_parser("launch", help="Start a new Agent behind the macOS file boundary")
+    launch.add_argument("project_id")
+    launch.add_argument("--tokens", type=Path, required=True)
+    launch.add_argument("--url", default=os.environ.get("FILEWISE_URL", "http://127.0.0.1:8000"))
+    launch.add_argument("executable", nargs=argparse.REMAINDER)
+    for name in ("status", "sync", "review", "publish"):
+        action = actions.add_parser(name)
+        action.add_argument("project_id")
+        if name in ("review", "publish"):
+            action.add_argument("release_id")
+        if name == "publish":
+            action.add_argument("--expected-active", default=None)
     commands.add_parser("demo", help="Run synthetic lifecycle in a fresh database")
     commands.add_parser("overview")
     for command in ("scope", "propose", "resolve", "impact", "diff", "build"):
@@ -59,7 +83,9 @@ def main(argv=None):
             sub.add_argument("--expected-active", default=None)
         if command == "context":
             sub.add_argument("object_ids", nargs="+")
-    auth = commands.add_parser("auth-init", help="Generate four separate role tokens; refuses to overwrite")
+    auth = commands.add_parser(
+        "auth-init", help="Generate operator and restricted Agent tokens; refuses overwrite"
+    )
     auth.add_argument("--out", type=Path, default=Path(".filewise/tokens.json"))
     serve = commands.add_parser("serve")
     serve.add_argument("--tokens", type=Path, default=os.environ.get("FILEWISE_TOKENS_FILE"))
@@ -67,16 +93,41 @@ def main(argv=None):
     serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     try:
-        if args.command == "auth-init":
+        if args.command == "agent":
+            result = agent.run(args)
+        elif args.command == "showcase":
+            import tempfile
+
+            import uvicorn
+
+            from .api import create_app
+            from .showcase import Showcase
+
+            with tempfile.TemporaryDirectory(prefix="filewise-demo-") as directory:
+                demo = Showcase(directory)
+                print(f"Synthetic Filewise demo: http://127.0.0.1:{args.port}", file=sys.stderr)
+                uvicorn.run(
+                    create_app(demo.engine, demo.tokens, showcase=demo),
+                    host="127.0.0.1",
+                    port=args.port,
+                    access_log=False,
+                )
+            return 0
+        elif args.command == "auth-init":
             tokens = {
                 secrets.token_urlsafe(32): {"id": f"local-{role}", "roles": [role]}
                 for role in ("reader", "editor", "reviewer", "publisher")
+            }
+            tokens[secrets.token_urlsafe(32)] = {
+                "id": "local-agent",
+                "roles": ["reader"],
+                "audience": "agent",
             }
             args.out.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(tokens, indent=2) + "\n")
-            result = {"tokens_file": str(args.out), "identities": 4}
+            result = {"tokens_file": str(args.out), "identities": len(tokens)}
         elif args.command == "serve":
             import uvicorn
 
@@ -97,7 +148,25 @@ def main(argv=None):
                 if hasattr(args, "file") and args.command != "ingest"
                 else None
             )
-            if args.command == "demo":
+            if args.command == "project":
+                from .projects import Projects
+
+                projects = Projects(engine)
+                if args.action == "launch":
+                    command = args.executable[1:] if args.executable[:1] == ["--"] else args.executable
+                    result = agent.launch(projects, args.project_id, actor, args.tokens, args.url, command)
+                elif args.action == "add":
+                    spec = json.loads(args.spec.read_text()) if args.spec else {}
+                    result = projects.create({**spec, "id": args.id, "name": args.name}, actor, args.root)
+                elif args.action == "status":
+                    result = projects.detail(args.project_id, actor)
+                elif args.action == "sync":
+                    result = projects.snapshot(args.project_id, actor)
+                elif args.action == "review":
+                    result = projects.approve(args.project_id, args.release_id, actor)
+                else:
+                    result = projects.activate(args.project_id, args.release_id, args.expected_active, actor)
+            elif args.command == "demo":
                 from .demo import run_demo
 
                 result = run_demo(engine)
@@ -143,6 +212,8 @@ def main(argv=None):
             else:
                 result = getattr(engine, args.command)(args.release_id, actor)
         print(canonical(result))
+        if args.command == "project" and args.action == "launch":
+            return result["exit_code"]
         return 0
     except (FilewiseError, ValidationError, OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)

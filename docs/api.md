@@ -51,3 +51,31 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```
 
 结果中的 `release_id` 必须随下游结果保存。`instruction` 是数据处理约束，没有授权调用工具；被引文中的命令也没有权限。若返回 403/409，应停止依赖该上下文的操作并请求新的批准版本，不自动切换到最新索引或工作目录。
+
+## 项目文件网关
+
+普通操作员凭据具有 reader/editor/reviewer/publisher 角色。Agent 身份额外固定 `audience: "agent"`，只允许下表注明的入口以及 `GET /api/me`；不能访问其余内核端点以绕过草稿门禁。
+
+| 方法与路径 | 内容 / 权限 |
+| --- | --- |
+| `GET /api/projects` | 可见项目列表；Agent 仅收到 id、name、active_release |
+| `POST /api/projects` | editor；ProjectSpec（id、name、dependencies、checks、excludes），不接受服务器 root |
+| `GET /api/projects/{id}` | 操作员项目详情、契约和快照历史 |
+| `POST /api/projects/{id}/sync` | editor；扫描已由本地 CLI 注册的目录 |
+| `POST /api/projects/{id}/upload` | editor；multipart 多个 `files`，文件名为项目相对路径；完整文件集创建候选版本 |
+| `GET /api/projects/{id}/snapshots/{release}` | 操作员查看 manifest、定位变更、影响与检查结果 |
+| `GET /api/projects/{id}/snapshots/{release}/preview?path=...` | editor/reviewer/publisher 审核预览，receipt.decision 为 DRAFT_PREVIEW |
+| `POST /api/projects/{id}/snapshots/{release}/approve` | reviewer，须独立于候选作者且构建 PASS |
+| `POST /api/projects/{id}/snapshots/{release}/activate` | publisher，正文 `{"expected_active": null}` 或当前 ID；目录必须匹配快照 |
+| `POST /api/projects/{id}/sessions?release_id=...` | Agent 可用；省略 release_id 时固定当前发布，返回 session_id |
+| `GET /api/sessions/{session}` | Agent 可用；仅会话拥有者，返回固定版本文件集 |
+| `GET /api/sessions/{session}/read?path=...` | Agent 可用；每次重验资格，返回 text、fragments、原件 base64、receipt |
+| `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定版本片段的字面查询，最多 100 条结果，含来源哈希与位置 |
+
+项目版本的撤销与指针回退沿用 `POST /api/releases/{release}/revoke` 和 `/rollback`。回退不会覆盖真实目录，后续读取仍需通过哈希匹配。搜索是有界字面匹配，未接入向量检索、zvec-grep 或 TeamAI。
+
+全套请求仍受入口认证和正文大小限制；重复上传路径、越界路径拒绝。所有原文件字节留在本地，Base64 只是响应编码。语义提示、报告校验和与读取回执均不是数字签名或自动业务正确性证明。
+
+## 专用演示
+
+只有 `filewise showcase` 创建的临时合成实例启用 `GET /demo`（演示身份和项目 ID）与 editor 的 `POST /api/demo/change`、`/repair`。普通 `filewise serve` 不启用这些能力。不得将专用演示实例作为真实项目的认证服务。
