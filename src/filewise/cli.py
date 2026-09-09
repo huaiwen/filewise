@@ -23,6 +23,80 @@ from .models import (
 )
 
 
+def local_tokens(state):
+    from .api import load_tokens
+    from .projects import ALL_ROLES
+
+    owner = Actor(id="local-owner", roles=ALL_ROLES)
+    token_file = state / "tokens.json"
+    if token_file.resolve() != token_file.absolute():
+        raise FilewiseError("Filewise credentials must not be a symlink")
+    if not token_file.exists():
+        tokens = {
+            secrets.token_urlsafe(32): owner.model_dump(mode="json"),
+            secrets.token_urlsafe(32): {"id": "local-agent", "roles": ["reader"], "audience": "agent"},
+        }
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(tokens, indent=2) + "\n")
+    tokens = load_tokens(token_file)
+    token = next(
+        (
+            key
+            for key, actor in tokens.items()
+            if actor.id == "local-owner" and actor.roles == ALL_ROLES and actor.audience == "operator"
+        ),
+        None,
+    )
+    if token is None:
+        raise FilewiseError("Local owner credential is missing from " + str(token_file))
+    return tokens, token
+
+
+def start(args):
+    import threading
+    import time
+    import webbrowser
+
+    import uvicorn
+
+    from .api import create_app
+
+    database = Path(args.db).absolute()
+    if database.resolve() != database:
+        raise FilewiseError("Filewise state must not be a symlink")
+    database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    engine = Engine(database)
+    tokens, token = local_tokens(engine.path.parent)
+    address = f"http://127.0.0.1:{args.port}"
+    url = address + "/#connect=" + token
+    print(
+        "Filewise 工作台：" + address + "\n选择关注文件夹，再连接常用 Agent。Ctrl+C 停止服务。",
+        file=sys.stderr,
+        flush=True,
+    )
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(engine, tokens, local_setup=True), host="127.0.0.1", port=args.port, access_log=False
+        )
+    )
+    if args.no_open:
+        print("本机连接链接：" + url, file=sys.stderr, flush=True)
+    else:
+
+        def open_ready():
+            for _ in range(50):
+                if server.started:
+                    webbrowser.open(url)
+                    return
+                if server.should_exit:
+                    return
+                time.sleep(0.1)
+
+        threading.Thread(target=open_ready, daemon=True).start()
+    server.run()
+
+
 def followed_project(root):
     """Open only the explicitly selected folder's local Filewise state."""
     from .middleware import Middleware
@@ -46,7 +120,7 @@ def followed_project(root):
 def follow(args):
     import uvicorn
 
-    from .api import create_app, load_tokens
+    from .api import create_app
     from .middleware import Middleware, WatchConfig
     from .projects import ALL_ROLES, Projects
 
@@ -83,32 +157,15 @@ def follow(args):
     settings = middleware.config("workspace", owner)
     if settings["baseline"] is None:
         middleware.configure("workspace", WatchConfig(), owner)
-    token_file = state / "tokens.json"
-    if not token_file.exists():
-        tokens = {
-            secrets.token_urlsafe(32): owner.model_dump(mode="json"),
-            secrets.token_urlsafe(32): {"id": "local-agent", "roles": ["reader"], "audience": "agent"},
-        }
-        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(tokens, indent=2) + "\n")
-    tokens = load_tokens(token_file)
-    token = next(
-        (
-            key
-            for key, actor in tokens.items()
-            if actor.id == "local-owner" and actor.roles == ALL_ROLES and actor.audience == "operator"
-        ),
-        None,
-    )
-    if token is None:
-        raise FilewiseError("Local owner credential is missing from " + str(token_file))
+    tokens, token = local_tokens(state)
     print(
         f"Filewise: http://127.0.0.1:{args.port}\n访问凭据（粘贴到工作台）: {token}\n关注目录: {root}\nCtrl+C 停止自动关注；再次运行同一命令可继续。",
         file=sys.stderr,
         flush=True,
     )
-    uvicorn.run(create_app(engine, tokens), host="127.0.0.1", port=args.port, access_log=False)
+    uvicorn.run(
+        create_app(engine, tokens, local_setup=True), host="127.0.0.1", port=args.port, access_log=False
+    )
 
 
 def main(argv=None):
@@ -124,6 +181,13 @@ def main(argv=None):
     parser.add_argument("--roles", default="editor", help="Comma-separated local roles")
     commands = parser.add_subparsers(dest="command", required=True)
     agent.arguments(commands)
+    starter = commands.add_parser(
+        "start", help="Open the local Filewise setup and Agent connection workbench"
+    )
+    starter.add_argument("--port", type=int, default=8000)
+    starter.add_argument(
+        "--no-open", action="store_true", help="Print the local sign-in link without opening a browser"
+    )
     follow_parser = commands.add_parser(
         "follow", help="Configure and watch a folder; serve its local workbench"
     )
@@ -139,6 +203,22 @@ def main(argv=None):
     recovery = commands.add_parser("recover", help="Recover an interrupted writeback for a followed folder")
     recovery.add_argument("root", type=Path)
     recovery.add_argument("release_id")
+    hook = commands.add_parser("agent-hook", help=argparse.SUPPRESS)
+    hook.add_argument("project_id")
+    hook.add_argument("agent", choices=("codex", "claude", "pi"))
+    native_shell = commands.add_parser("agent-shell", help=argparse.SUPPRESS)
+    native_shell.add_argument("job")
+    native_shell.add_argument("worker_pid", type=int)
+    worker = commands.add_parser("agent-worker", help=argparse.SUPPRESS)
+    for argument in ("root", "worktree", "private_state", "cwd", "job"):
+        worker.add_argument(argument)
+    worker.add_argument("done_fd", type=int)
+    worker.add_argument("shell_command")
+    connection = commands.add_parser("connect", help="Install or inspect a project-scoped Agent connection")
+    connection.add_argument("project_id")
+    connection.add_argument("agent", choices=("codex", "claude", "pi"))
+    connection.add_argument("--remove", action="store_true")
+    connection.add_argument("--preview", action="store_true")
     showcase = commands.add_parser("showcase", help="Serve a disposable synthetic workspace demo")
     showcase.add_argument("--port", type=int, default=8765)
     project = commands.add_parser("project", help="Trusted local project administration")
@@ -196,8 +276,61 @@ def main(argv=None):
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+    if args.command == "agent-hook":
+        # Hook failures must block before-use calls; ordinary exit 1 is fail-open in some hosts.
+        try:
+            from .connections import Connections
+            from .middleware import Middleware
+            from .projects import Projects
+
+            raw = sys.stdin.buffer.read(11 * 1024 * 1024 + 1)
+            if len(raw) > 11 * 1024 * 1024:
+                raise ValueError("Hook request too large")
+            event = json.loads(raw)
+            result = Connections(Middleware(Projects(Engine(args.db)))).handle(
+                args.project_id, args.agent, event
+            )
+            print(canonical(result))
+            return 0
+        except Exception as exc:
+            print("Filewise 连接异常，已阻止操作：" + str(exc), file=sys.stderr)
+            return 2
     try:
-        if args.command == "follow":
+        if args.command == "agent-shell":
+            from .connections import run_shell
+
+            return run_shell(args.job, args.worker_pid)
+        if args.command == "agent-worker":
+            from .connections import shell_worker
+
+            return shell_worker(
+                args.root,
+                args.worktree,
+                args.private_state,
+                args.cwd,
+                args.job,
+                args.done_fd,
+                args.shell_command,
+            )
+        if args.command == "connect":
+            from .connections import Connections
+            from .middleware import Middleware
+            from .projects import Projects
+
+            connections = Connections(Middleware(Projects(Engine(args.db))))
+            actor = Actor(id=args.actor, roles=set(args.roles.split(",")))
+            action = (
+                connections.disconnect
+                if args.remove
+                else connections.preview
+                if args.preview
+                else connections.install
+            )
+            result = action(args.project_id, args.agent, actor)
+        elif args.command == "start":
+            start(args)
+            return 0
+        elif args.command == "follow":
             follow(args)
             return 0
         elif args.command in ("run", "recover"):

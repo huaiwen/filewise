@@ -237,42 +237,7 @@ class Middleware:
             if hashes(files) == hashes(originals):
                 return {"exit_code": completed.returncode, "status": "unchanged", "release_id": None}
             with self.lock(project_id):
-                snapshot = self.projects.snapshot(
-                    project_id, GUARD, files, base_release=baseline["release_id"], captured=True
-                )
-                with self.engine.connect(True) as db:
-                    db.execute(
-                        "INSERT INTO writebacks VALUES(?,?,?,?,NULL,?)",
-                        (snapshot["release_id"], project_id, baseline["release_id"], "pending", now()),
-                    )
-                    db.execute(
-                        "UPDATE watches SET last_event=? WHERE project_id=?",
-                        (
-                            canonical(
-                                {
-                                    "kind": "before_write",
-                                    "release_id": snapshot["release_id"],
-                                    "paths": [change["path"] for change in snapshot["report"]["changes"]],
-                                    "decision": snapshot["verification"]["decision"],
-                                    "recorded_at": now(),
-                                    "writer": actor.id,
-                                    "original_files_changed": False,
-                                }
-                            ),
-                            project_id,
-                        ),
-                    )
-                    self.engine._audit(
-                        db,
-                        project["scope_id"],
-                        actor,
-                        "guard.proposed",
-                        {
-                            "release_id": snapshot["release_id"],
-                            "exit_code": completed.returncode,
-                            "executable": Path(command[0]).name,
-                        },
-                    )
+                snapshot = self.capture(project_id, baseline["release_id"], files, GUARD, writer=actor.id)
             return {
                 "exit_code": completed.returncode,
                 "status": "pending_review",
@@ -280,6 +245,28 @@ class Middleware:
                 "verification": snapshot["verification"],
                 "original_files_changed": False,
             }
+
+    def capture(self, project_id, baseline, files, actor, *, writer=None):
+        """Caller holds the project lock; snapshots and approval use the existing file kernel."""
+        snapshot = self.projects.snapshot(project_id, actor, files, base_release=baseline, captured=True)
+        with self.engine.connect(True) as db:
+            project = self.projects._project(db, project_id, actor)
+            db.execute(
+                "INSERT INTO writebacks VALUES(?,?,?,?,NULL,?)",
+                (snapshot["release_id"], project_id, baseline, "pending", now()),
+            )
+            event = {
+                "kind": "before_write",
+                "release_id": snapshot["release_id"],
+                "paths": [c["path"] for c in snapshot["report"]["changes"]],
+                "decision": snapshot["verification"]["decision"],
+                "recorded_at": now(),
+                "writer": writer or actor.id,
+                "original_files_changed": False,
+            }
+            db.execute("UPDATE watches SET last_event=? WHERE project_id=?", (canonical(event), project_id))
+            self.engine._audit(db, project["scope_id"], actor, "guard.proposed", event)
+        return snapshot
 
     def _versions(self, project_id, release_id, actor):
         with self.engine.connect() as db:

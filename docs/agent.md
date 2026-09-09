@@ -1,10 +1,12 @@
 # 在 Agent 与真实文件之间使用 Filewise
 
-Agent 使用 HTTP 文件入口，操作员管理真实目录、审批和发布。下面以 Codex 为例，其他能调用命令行的 Agent 使用相同接口。仓库环境中使用 `uv run --no-sync filewise`；独立 Agent 环境需把安装后的 filewise 所在 bin 目录加入 PATH（例如 `/absolute/path/to/Filewise/.venv/bin`）。安装目录应在被保护的真实项目目录之外。
+日常使用从 `uv run --no-sync filewise start` 开始：网页选文件夹，在 Codex、Claude Code 或 Pi 旁点击“连接”，自检后在该目录新开 Agent 任务。Filewise 自动安装项目配置，Agent 若要求信任需启用一次；工作台收到工具请求后自动显示状态。原生受控连接的范围和说明见 [中间件说明](middleware.md)。
+
+下文介绍按已发布版本读取的 HTTP 网关。操作员管理真实目录、审批和发布，Agent 只获得限定版本的文件。仓库环境中使用 `uv run --no-sync filewise`；独立 Agent 环境需把安装后的 filewise 所在 bin 目录加入 PATH（例如 `/absolute/path/to/Filewise/.venv/bin`）。安装目录应在被保护的真实项目目录之外。
 
 ## 自动观察与受控修改
 
-日常从 `filewise follow /absolute/path/to/files` 开始，默认同时启用保存后观察和受控修改。使用 `filewise run /absolute/path/to/files -- 模型命令` 启动修改任务，模型编辑副本；操作员在工作台审核并写回。完整命令见 [中间件说明](middleware.md)。
+`start` 和 `follow /absolute/path/to/files` 默认同时启用保存后观察和受控修改；写入前处理还需在页面连接 Agent。也可使用 `filewise run /absolute/path/to/files -- 模型命令` 启动一次性副本任务；操作员在工作台审核并写回。完整命令见 [中间件说明](middleware.md)。
 
 `run` 用于修改候选；下文的 `agent` 与 `project launch` 用于只读消费已发布版本。它们沿用同一文件、依据和发布内核。
 

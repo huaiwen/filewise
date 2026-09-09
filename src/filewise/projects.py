@@ -23,6 +23,10 @@ MAX_PROJECT_BYTES = 50 * 1024 * 1024
 DEFAULT_EXCLUDES = [
     ".git",
     ".filewise",
+    ".codex",
+    ".claude",
+    ".pi",
+    ".filewise-tmp",
     ".filewise-write-*",
     ".venv",
     "node_modules",

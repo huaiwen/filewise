@@ -9,8 +9,9 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
+from .connections import Connections
 from .engine import Engine, FilewiseError, require
 from .ingest import MAX_BYTES, ingest
 from .middleware import Middleware, WatchConfig
@@ -21,6 +22,7 @@ from .models import (
     ContextRequest,
     DiffRequest,
     ImpactRequest,
+    Model,
     ResolveRequest,
     Revision,
     Scope,
@@ -132,10 +134,17 @@ class Boundary:
         await self.app(scope, bounded_receive, secured_send)
 
 
-def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
+class LocalProject(Model):
+    root: str = Field(min_length=1, max_length=2048)
+    name: str = Field(default="", max_length=120)
+    includes: list[str] = Field(default_factory=lambda: ["**"], min_length=1, max_length=50)
+
+
+def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False) -> FastAPI:
     tokens = validate_tokens(tokens)
     projects = Projects(engine)
     middleware = Middleware(projects)
+    connections = Connections(middleware)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -200,6 +209,59 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None) -> FastAPI:
             raise FilewiseError("Demo is not enabled on this server", 404)
         require(who, "editor")
         return showcase.step(step)
+
+    def local_only(who):
+        require(who, "editor")
+        if not local_setup:
+            raise FilewiseError("请使用 filewise start 启动本机连接向导。", 403)
+
+    @app.get("/api/setup")
+    def setup_info(who=Depends(actor)):
+        return {"local_setup": local_setup, "native_connections": __import__("sys").platform == "darwin"}
+
+    @app.post("/api/setup/project", status_code=201)
+    def setup_project(data: LocalProject, who=Depends(actor)):
+        import hashlib
+
+        local_only(who)
+        try:
+            root = Path(data.root).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise FilewiseError("找不到这个文件夹，请检查完整路径和访问权限。") from exc
+        project_id = "folder-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
+        with engine.connect() as db:
+            existing = db.execute("SELECT id FROM projects WHERE root=?", (str(root),)).fetchone()
+        if existing:
+            return projects.detail(existing[0], who)
+        project = projects.create(
+            {"id": project_id, "name": data.name or root.name, "includes": data.includes}, who, root
+        )
+        middleware.configure(project_id, WatchConfig(), who)
+        return projects.detail(project["id"], who)
+
+    @app.get("/api/projects/{project_id}/connections")
+    def connection_status(project_id: str, who=Depends(actor)):
+        return connections.status(project_id, who)
+
+    @app.get("/api/projects/{project_id}/connections/{agent_name}/preview")
+    def connection_preview(project_id: str, agent_name: str, who=Depends(actor)):
+        local_only(who)
+        return connections.preview(project_id, agent_name, who)
+
+    @app.post("/api/projects/{project_id}/connections/{agent_name}")
+    def connect_agent(project_id: str, agent_name: str, who=Depends(actor)):
+        local_only(who)
+        return connections.install(project_id, agent_name, who)
+
+    @app.delete("/api/projects/{project_id}/connections/{agent_name}")
+    def disconnect_agent(project_id: str, agent_name: str, who=Depends(actor)):
+        local_only(who)
+        return connections.disconnect(project_id, agent_name, who)
+
+    @app.post("/api/projects/{project_id}/connections/{agent_name}/check")
+    def check_agent(project_id: str, agent_name: str, who=Depends(actor)):
+        local_only(who)
+        return connections.self_test(project_id, agent_name, who)
 
     @app.get("/api/projects")
     def project_list(who=Depends(actor)):

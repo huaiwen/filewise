@@ -2,7 +2,35 @@
 
 ## 最短使用路径
 
-先在 Filewise 仓库安装：`uv sync --locked --all-extras --no-editable`。下文的 `filewise` 在仓库内可替换成 `uv run --no-sync filewise`；安装后的可执行文件也位于 `.venv/bin/filewise`。Filewise 和模型运行环境应放在被关注目录之外。
+先在 Filewise 仓库安装：`uv sync --locked --all-extras --no-editable`，然后运行 `uv run --no-sync filewise start`。页面自动打开并登录：**关注文件夹 → 连接 Agent → 验证接入**。之后照常使用 Agent，通过页面检查、审核和写回修改。所需项目配置由“连接”自动安装；Agent 自身可能要求一次项目钩子/扩展信任，随后新开任务或重新加载。
+
+`start` 的关注列表、版本和凭据保存在运行目录的 `.filewise/`；再次从同一目录启动即可恢复。`--db` 可指定独立状态路径。默认只监听 `127.0.0.1:8000`，`start --port 8001` 修改端口；`start --no-open` 只显示本机登录链接。只在自己的服务成功监听后自动打开浏览器。关闭浏览器不停止服务；Ctrl+C 停止，未设置开机自启。
+
+下文的 `filewise` 在仓库内可替换成 `uv run --no-sync filewise`；安装后的可执行文件也位于 `.venv/bin/filewise`。Filewise 和模型运行环境应放在被关注目录之外。
+
+## 原生 Agent 接入
+
+连接只安装在选定目录，保留已有设置和其他钩子；不修改用户全局配置。断开时移除 Filewise 项并保留其他设置；已有历史、审核副本及候选不删除。
+
+| Agent | 项目接入文件 | 操作方式 |
+| --- | --- | --- |
+| Codex | `.codex/hooks.json` | 在同一目录新开任务，按客户端要求信任项目钩子 |
+| Claude Code | `.claude/settings.local.json` | 在同一目录新开任务，按客户端要求启用项目钩子 |
+| Pi | `.pi/extensions/filewise.ts` | 新开任务或 `/reload`，按客户端要求信任扩展 |
+
+界面依次显示“配置已安装 · 等待新任务”“Agent 已加载 · 等待文件操作”“已收到受控工具请求”。**连接自检通过不代表 Agent 已实际加载**：自检只验证配置、路径改写、真实 macOS 文件限制及副本可写。只有接收到工具请求后才记录最后工具与时间；此状态也不代表所有其他工具都受控。CLI 是否出现在 PATH 只作提示，不能证明桌面端能力。
+
+文件读写路径进入同一任务的持久审核副本，任务中的后续读取能看到自己之前的修改；Shell 在该副本内执行。副本只包含关注文件，所需项目脚本也要选入。修改成为候选，原件不变；人工审核后使用“写回原文件并发布”。同一任务的候选写回后可继续编辑；如果原件被其他人或另一任务改过，旧任务拒绝继续，需基于最新原件新开任务。
+
+覆盖 Codex `Bash`/`exec_command`/`apply_patch`，Claude 原生读写、编辑、查找及 `Bash`，Pi 的 `read`/`write`/`edit`/`bash`/查找工具。Codex 钩子协议要求用 `permissionDecision=allow` 才能接受 `updatedInput`，因此被改写的工具在该钩子层获准执行；实际 Shell 另外受 Filewise OS 规则约束，候选仍必须人工批准写回。Claude 的参数改写继续交由原有工具权限判断。Filewise 不写入 Agent 的宽松权限设置。具体协议见 [Codex 官方钩子文档](https://learn.chatgpt.com/docs/hooks)、[Claude Code 官方钩子文档](https://code.claude.com/docs/en/hooks)。
+
+原生 Shell 的后代不能读写原目录和 Filewise 私有状态，只能写审核副本及 `/dev/null`；临时文件使用副本中的 `.filewise-tmp`。原生文件工具的路径改写依赖 Agent 正常执行钩子。钩子被关闭、宿主超时或其他钩子改写行为时，不能保证接管；Filewise 自身的启动/输入错误用阻断返回，仍不能替代宿主的钩子失败策略。外部 MCP、宿主绕过钩子的工具、后台进程、Pi `!` 用户终端命令、独立终端、文档打开前的自动上下文加载均不覆盖。适配器不是整个 Agent 的 OS 沙箱。
+
+目前需 macOS。文件保存后的观察仍可独立使用；其他系统的受控接入明确不可用。暂停或切到仅观察时，已经安装的受控钩子会阻断新工具请求，避免静默直写；如要恢复原有 Agent 操作，请在 Filewise 中断开，再重载 Agent 配置。运行中的命令不会被暂停操作强制终止。
+
+连接命令绑定本机 Python 安装和数据库的绝对路径，移动安装位置后需重新连接。接入配置不含访问令牌，不应作为跨机器共享配置提交。不同 Filewise 数据库不要同时接管同一个目录。候选副本会保留供同一任务继续使用，当前没有自动清理历史/副本功能。
+
+## 命令行关注
 
 ```bash
 # 第一次：选一个目录和格式；省略 --include 则关注所有未排除文件。
@@ -68,19 +96,28 @@ filewise recover /absolute/path/to/files RELEASE_ID
 | 请求 | 用途 |
 | --- | --- |
 | `GET /api/projects/{id}/watch` | 模式、观察基线、最后事件、错误与 worker 状态 |
+| `GET /api/setup` | 当前服务是否开启本机设置功能 |
+| `POST /api/setup/project` | 本机设置模式下显式注册 `{ "root": 绝对路径, "name": 名称, "includes": ["**"] }` |
+| `GET /api/projects/{id}/connections` | 已安装配置、自检与实际工具事件状态 |
+| `GET .../connections/{agent}/preview` | 只显示 Filewise 将增加的配置，不输出原配置中的其他信息 |
+| `POST / DELETE .../connections/{agent}` | 本机设置模式下安装/断开项目接入，agent 为 codex、claude、pi |
+| `POST .../connections/{agent}/check` | 实际隔离自检；不标记 Agent 已加载 |
 | `PUT /api/projects/{id}/watch` | 保存 `{ "enabled": true, "mode": "both", "settle_seconds": 1 }` |
 | `GET /api/projects/{id}/snapshots/{release_id}` | 差异、定位、依赖影响、检查与 writeback 状态 |
 | `POST .../snapshots/{release_id}/approve` | 独立审核 |
 | `POST .../snapshots/{release_id}/apply` | 传 `{ "expected_active": 当前release或null }` 写回并发布 |
 | `POST .../snapshots/{release_id}/recover` | 恢复未完成的写回 |
 
-`follow` 创建的项目 ID 为 `workspace`。`last_event.kind` 区分 `after_save` 与 `before_write`，后者的 `original_files_changed` 为 false。用 `release_id` 去重，并读取不可变报告，可接自己的后续处理；这里只轮询取报告，没有执行用户自定义 webhook/shell hook。观测只保留最新通知，完整候选历史仍在项目快照列表中。API 不提供远程执行任意模型命令的端点，受控任务由本机 `run` 显式启动。
+`follow` 创建的项目 ID 为 `workspace`；`start` 按所选路径生成项目 ID。`last_event.kind` 区分 `after_save` 与 `before_write`，后者的 `original_files_changed` 为 false。用 `release_id` 去重，并读取不可变报告，可接自己的后续处理；这里只轮询取报告，没有执行用户自定义 webhook/shell hook。观测只保留最新通知，完整候选历史仍在项目快照列表中。API 不提供远程执行任意模型命令的端点；工具执行发生在本机 Agent 钩子或 `run` 启动的子进程中。
 
 ## 可重复验证
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 PYTHONPATH=src .venv/bin/python examples/check_middleware.py
+.venv/bin/python examples/check_connections.py
 ```
 
 前者包含去抖、重启/暂停、最后文件删除、Excel 检查传播、审批、冲突、失败恢复、激活后中断、符号链接、令牌权限及配置持久化；测试中的工作副本命令不启用 OS 隔离。后者在 macOS 上使用真实 follow 服务、run 命令和继承的 OS 限制：原件及私有状态读写被拒绝 → 副本修改 → 未审批写回拒绝 → 审批写回 → Agent 网关读取新字节。仅使用临时合成数据。
+
+`check_connections.py` 使用已安装包执行生成的 Codex/Claude 钩子命令、真实 Shell 隔离及 Excel 审批写回。可传 `--pi-package /path/to/@earendil-works/pi-coding-agent --node /path/to/node` 加载已安装 Pi 的 TypeScript 扩展加载器、事件运行器和原生 write 工具。Codex/Claude 输入是协议测试事件；没有把它们说成完整客户端或云模型回合的验证。

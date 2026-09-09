@@ -61,7 +61,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `GET /api/projects` | 可见项目列表；Agent 仅收到 id、name、active_release |
 | `POST /api/projects` | editor；ProjectSpec（id、name、dependencies、checks、excludes），不接受服务器 root |
 | `GET /api/projects/{id}` | 操作员项目详情、契约和快照历史 |
-| `POST /api/projects/{id}/sync` | editor；扫描已由本地 CLI 注册的目录 |
+| `POST /api/projects/{id}/sync` | editor；扫描已明确注册的本地目录 |
 | `POST /api/projects/{id}/upload` | editor；multipart 多个 `files`，文件名为项目相对路径；完整文件集创建候选版本 |
 | `GET /api/projects/{id}/snapshots/{release}` | 操作员查看 manifest、定位变更、影响与检查结果 |
 | `GET /api/projects/{id}/snapshots/{release}/preview?path=...` | editor/reviewer/publisher 审核预览，receipt.decision 为 DRAFT_PREVIEW |
@@ -79,3 +79,5 @@ curl -H "Authorization: Bearer $TOKEN" \
 ## 专用演示
 
 只有 `filewise showcase` 创建的临时合成实例启用 `GET /demo`（演示身份和项目 ID）与 editor 的 `POST /api/demo/change`、`/repair`。普通 `filewise serve` 不启用这些能力。不得将专用演示实例作为真实项目的认证服务。
+
+本机首次使用、原生 Agent 连接、关注、受控写回与恢复接口见 [中间件 API](middleware.md#程序接入)。目录注册和配置安装仅在 start/follow 的本机设置模式开启，仍要求操作员凭据；普通 serve 默认不开放此能力。

@@ -11,7 +11,7 @@ from pathlib import Path
 from .engine import FilewiseError
 
 
-def sandbox_command(paths, command):
+def sandbox_command(paths, command, *, worktree=None):
     """macOS inherited filesystem boundary for a newly launched Agent process."""
     import shutil
     import sys
@@ -22,10 +22,29 @@ def sandbox_command(paths, command):
         )
     if not command:
         raise FilewiseError("Supply the Agent executable after --")
+    exception = (
+        "(subpath " + json.dumps(str(Path(worktree).resolve()), ensure_ascii=False) + ")"
+        if worktree
+        else None
+    )
     protected = " ".join(
-        "(subpath " + json.dumps(str(Path(p).resolve()), ensure_ascii=False) + ")" for p in paths
+        "(require-all (subpath "
+        + json.dumps(str(Path(p).resolve()), ensure_ascii=False)
+        + ") (require-not "
+        + exception
+        + "))"
+        if exception
+        else "(subpath " + json.dumps(str(Path(p).resolve()), ensure_ascii=False) + ")"
+        for p in paths
     )
     profile = "(version 1)(allow default)(deny file-read* file-write* " + protected + ")"
+    if exception:
+        # Native shell operations can write only the review copy (and discard output to /dev/null).
+        profile += (
+            "(deny file-write* (require-all (require-not "
+            + exception
+            + ') (require-not (literal "/dev/null"))))'
+        )
     return ["sandbox-exec", "-p", profile, *command]
 
 

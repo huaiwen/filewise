@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files', watch:null, seenEvent:null};
+const state = {token:'', me:null, demo:null, projects:[], project:null, snapshot:null, path:null, file:null, view:'files', watch:null, seenEvent:null, setup:null, connections:null};
 const el = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
 const short = value => value ? value.slice(0,10) : '—';
 const stamp = value => new Date(value).toLocaleString('zh-CN',{hour12:false});
@@ -25,7 +25,9 @@ async function connect(token){
   const me=await api('me','GET',undefined,token);
   if(me.audience==='agent')throw new Error('工作台需要操作员凭据。Agent 凭据请用于 filewise agent CLI。');
   state.token=token;state.me=me;$('identity-label').textContent=me.id;$('connect').textContent='切换凭据';
+  sessionStorage.setItem('filewise-token',token);
   $('new-project').disabled=!has('editor');
+  state.setup=await api('setup');$('begin-setup').hidden=!state.setup.local_setup||!has('editor');
   await refresh();
 }
 async function refresh(preferred){
@@ -34,7 +36,7 @@ async function refresh(preferred){
   const id=preferred||state.project?.id||state.projects[0]?.id;
   const select=$('project-select');select.replaceChildren();
   for(const p of state.projects){const o=el('option',p.name);o.value=p.id;select.append(o);}
-  if(!state.projects.length){state.project=null;state.snapshot=null;$('content').replaceChildren(empty('还没有文件项目','点击左侧 + 创建项目，然后上传文件集。'));return;}
+  if(!state.projects.length){state.project=null;state.snapshot=null;$('content').replaceChildren(empty('先选一个关注文件夹','连接常用 Agent 后，照常工作；修改会在这里等待检查和审核。'));renderGate();if(state.setup?.local_setup)openSetup(true);return;}
   select.value=id;
   await selectProject(id);
 }
@@ -43,10 +45,12 @@ async function selectProject(id){
   state.project=await api('projects/'+enc(id));
   $('project-name').textContent=state.project.name;
   $('project-origin').textContent=state.project.source==='local'?'已注册本地目录':'上传的文件项目';
-  $('project-description').textContent=state.project.active_release?'当前发布 '+short(state.project.active_release)+' · 新变更经过检查与审核后启用':'尚未发布 · 上传或同步文件后创建首个候选版本';
+  $('project-description').textContent=state.project.active_release?'当前发布 '+short(state.project.active_release)+' · 新变更经过检查与审核后启用':'尚未发布 · 查看文件版本，审核后发布';
   $('upload').disabled=!has('editor')||state.project.source!=='upload';
   $('sync').disabled=!has('editor')||state.project.source!=='local';
   $('watch-settings').disabled=state.project.source!=='local';
+  $('agent-connections').disabled=state.project.source!=='local';
+  await refreshConnections();
   await refreshWatch();
   $('snapshot-select').replaceChildren();
   for(const s of state.project.snapshots){const o=el('option',stamp(s.created_at)+' · '+short(s.release_id)+(s.release_id===state.project.active_release?' · 当前':''));o.value=s.release_id;$('snapshot-select').append(o);}
@@ -184,7 +188,7 @@ function renderHistory(content){
 }
 on('connect',()=>{$('login-dialog').showModal();});on('empty-connect',()=>{$('login-dialog').showModal();});
 $('login-form').addEventListener('submit',run(async event=>{event.preventDefault();await connect($('token').value);$('token').value='';$('login-dialog').close();notice('已连接工作区。');}));
-on('refresh',()=>refresh());on('new-project',()=>{$('project-dialog').showModal();});on('upload',()=>{$('upload-dialog').showModal();});
+on('refresh',()=>refresh());on('new-project',()=>{if(state.setup?.local_setup)openSetup(true);else $('project-dialog').showModal();});on('upload',()=>{$('upload-dialog').showModal();});
 for(const button of document.querySelectorAll('[data-close]'))button.addEventListener('click',()=>$(button.dataset.close).close());
 $('project-select').addEventListener('change',run(()=>selectProject($('project-select').value)));
 $('snapshot-select').addEventListener('change',run(()=>selectSnapshot($('snapshot-select').value)));
@@ -220,7 +224,7 @@ async function refreshWatch(){
   if(state.project?.id!==project.id)return;
   state.watch=watch;
   const config=watch.config;
-  $('watch-status').textContent=watch.error?'关注异常：'+watch.error:!config.enabled?'关注已暂停':!watch.worker_running?'关注服务未运行':config.mode==='guard'?'受控修改已启用':'正在关注文件 · 保存后自动分析'+(config.mode==='both'?' · 受控修改可用':'');
+  $('watch-status').textContent=watch.error?'关注异常：'+watch.error:!config.enabled?'关注已暂停':!watch.worker_running?'关注服务未运行':config.mode==='guard'?'保存后分析未启用 · 请查看 Agent 连接状态':'保存后自动分析正在运行';
   const event=watch.last_event;
   $('watch-event').hidden=!event||state.seenEvent===event.release_id||state.snapshot?.release_id===event.release_id;
   if(event)$('watch-event').textContent=(event.kind==='before_write'?'有待审核修改':'发现文件变更')+' · '+event.paths.length+' 个文件 · 查看';
@@ -228,7 +232,7 @@ async function refreshWatch(){
 on('watch-settings',async()=>{
   await refreshWatch();$('watch-enabled').checked=state.watch.config.enabled;$('watch-mode').value=state.watch.config.mode;
   $('watch-save').disabled=!has('editor');$('watch-enabled').disabled=!has('editor');$('watch-mode').disabled=!has('editor');
-  $('watch-scope').textContent='关注范围：'+(state.project.spec.includes||['**']).join('、')+'。范围在首次 follow --include 时设定；默认排除凭据、.git 和 .filewise。';
+  $('watch-scope').textContent='关注范围：'+(state.project.spec.includes||['**']).join('、')+'。范围在首次选择文件夹时设定；默认排除凭据、版本库和 Agent 配置。';
   $('watch-dialog').showModal();
 });
 $('watch-form').addEventListener('submit',run(async event=>{
@@ -241,12 +245,65 @@ on('watch-event',async()=>{
 let watching=false;
 setInterval(async()=>{
   if(watching||document.hidden||!state.token||state.project?.source!=='local')return;
-  watching=true;try{await refreshWatch();}catch(error){$('watch-status').textContent='无法连接关注服务：'+error.message;}finally{watching=false;}
+  watching=true;try{await refreshWatch();await refreshConnections();}catch(error){$('watch-status').textContent='无法连接关注服务：'+error.message;}finally{watching=false;}
 },2000);
+function setupMessage(text,error=false){$('setup-message').textContent=text;$('setup-message').className=error?'error':'fine';}
+function openSetup(folder=false){
+  const choose=folder||!state.project||state.project.source!=='local';
+  $('folder-step').hidden=!choose;$('connection-step').hidden=choose;
+  $('setup-step-folder').className=choose?'current':'complete';$('setup-step-agent').className=choose?'':'current';
+  setupMessage('');if(!$('setup-dialog').open)$('setup-dialog').showModal();
+  if(!choose)renderConnections();
+}
+async function refreshConnections(){
+  const project=state.project;
+  if(project?.source!=='local'){state.connections=null;$('connection-summary').hidden=true;return;}
+  const data=await api('projects/'+enc(project.id)+'/connections');
+  if(state.project?.id!==project.id)return;
+  const changed=JSON.stringify(data)!==JSON.stringify(state.connections);state.connections=data;
+  $('connection-summary').hidden=false;
+  const verified=data.agents.filter(a=>a.state==='verified'), configured=data.agents.filter(a=>a.configured);
+  $('connection-summary').textContent=verified.length?'已收到 '+verified.map(a=>a.name).join('、')+' 的受控工具请求 · 修改会进入审核流程':configured.length?'已安装 Agent 配置，等待在 Agent 中新开任务验证':'Agent 尚未连接 · 普通保存会被观察，写入前处理需要先连接';
+  if(changed&&$('setup-dialog').open&&!$('connection-step').hidden)renderConnections();
+}
+function renderConnections(){
+  const data=state.connections;if(!data)return;
+  $('connection-root').textContent='关注目录：'+data.root;
+  $('connection-coverage').textContent=data.coverage;
+  $('add-another-folder').hidden=!state.setup?.local_setup;
+  const list=$('connection-list');list.replaceChildren();
+  const labels={not_connected:'尚未连接',waiting:'配置已安装 · 等待新任务',loaded:'Agent 已加载 · 等待文件操作',verified:'已收到受控工具请求',error:'需要处理'};
+  for(const item of data.agents){
+    const row=el('div',undefined,'connection-row'),text=el('div'),actions=el('div',undefined,'connection-actions');
+    text.append(el('strong',item.name),el('p',labels[item.state]+(item.available?'':' · 未在本机 PATH 中发现 CLI'),'small'));
+    if(item.last_tool)text.append(el('p','最近操作：'+item.last_tool+' · '+stamp(item.last_seen),'fine'));
+    if(item.self_test?.passed)text.append(el('p','连接自检通过 · '+stamp(item.self_test.at),'fine'));
+    if(item.error)text.append(el('p',item.error,'error small'));
+    function action(label,fn,primary=false){const b=el('button',label,primary?'primary':'');b.disabled=!has('editor')||!state.setup?.local_setup||!data.supported;b.addEventListener('click',async()=>{b.disabled=true;try{await fn();await refreshConnections();}catch(error){setupMessage(error.message,true);}finally{b.disabled=false;}});actions.append(b);}
+    if(!item.configured)action(item.installed?'修复连接':'连接',async()=>{await api(projectPath()+'/connections/'+item.agent,'POST');setupMessage('已安装 '+item.name+' 的项目接入配置。请运行连接自检，然后在 Agent 中新开任务。');},true);
+    if(item.configured)action('连接自检',async()=>{setupMessage('正在检查配置、工具路径和原文件隔离…');await api(projectPath()+'/connections/'+item.agent+'/check','POST');setupMessage('自检通过。现在去 '+item.name+' 打开这个文件夹并新开任务，接入状态会自动更新。');});
+    if(item.installed)action('断开',async()=>{await api(projectPath()+'/connections/'+item.agent,'DELETE');setupMessage('已移除 Filewise 接入配置。已有候选和版本保留，请重载 Agent 配置。');});
+    action('查看配置',async()=>{const preview=await api(projectPath()+'/connections/'+item.agent+'/preview');$('config-preview').hidden=false;$('config-preview').open=true;$('config-preview-body').textContent=preview.entry+'\n'+(typeof preview.addition==='string'?preview.addition:JSON.stringify(preview.addition,null,2));});
+    row.append(text,actions);list.append(row);
+  }
+  const verified=data.agents.some(a=>a.state==='verified');
+  const configured=data.agents.some(a=>a.configured);
+  $('setup-step-agent').className=configured?'complete':'current';
+  $('setup-step-check').className=verified?'complete':configured?'current':'';
+  $('connection-next').replaceChildren(el('strong',verified?'可以继续在 Agent 中工作':'接下来：在 Agent 中验证一次'),el('p',verified?'修改将出现在工作台的“待审核修改”中。查看差异和检查后，点击“审核通过”，再“写回原文件并发布”。':'在上方目录中新开一个 Agent 任务，让它读取或修改一个关注文件。若 Agent 提示信任本项目的钩子或扩展，请审核后启用一次；Pi 也可执行 /reload。仅点击自检不会标记为实际接入。'));
+  if(!data.supported)setupMessage('本机原生受控连接目前仅支持 macOS；保存后分析仍可使用。',true);
+  else if(!state.setup?.local_setup)setupMessage('此服务没有开启本机配置功能。请用 filewise start 打开连接向导。',true);
+}
+on('begin-setup',()=>openSetup(!state.project));on('agent-connections',async()=>{await refreshConnections();openSetup();});on('add-another-folder',()=>openSetup(true));
+$('folder-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.target.querySelector('button[type=submit]');button.disabled=true;
+  try{setupMessage('正在建立文件基线…');const includes=$('folder-includes').value.split('\n').map(p=>p.trim()).filter(Boolean);const project=await api('setup/project','POST',{root:$('folder-path').value.trim(),name:$('folder-name').value.trim(),includes:includes.length?includes:['**']});state.snapshot=null;await refresh(project.id);openSetup();setupMessage('文件夹已开始关注。再连接你的常用 Agent，启用写入前处理。');}
+  catch(error){setupMessage(error.message,true);}finally{button.disabled=false;}
+});
 async function demoStep(step){
   if(!has('editor'))throw new Error('请先将演示身份切换为编辑者。');
   state.snapshot=await api('demo/'+step,'POST');state.path='requirement.json';await refresh(state.demo.project_id);state.view='changes';renderView();notice(step==='change'?'需求已改为 120 kPa；检验计划仍为 100，发布被阻止。':'Excel 检验值已修复为 120。请切换审核者确认，再由发布者启用。');
 }
 on('demo-change',()=>demoStep('change'));on('demo-repair',()=>demoStep('repair'));
 $('demo-role').addEventListener('change',run(async()=>{await connect(state.demo.identities[$('demo-role').value].token);notice('已切换为 '+$('demo-role').selectedOptions[0].textContent+'。');}));
-(async()=>{try{const response=await fetch('/demo');if(response.ok){state.demo=await response.json();$('demo-banner').hidden=false;$('demo-role').hidden=false;await connect(state.demo.identities.editor.token);}}catch(error){notice(error.message,true);}})();
+(async()=>{try{const token=new URLSearchParams(location.hash.slice(1)).get('connect');if(token){history.replaceState(null,'',location.pathname);await connect(token);return;}const response=await fetch('/demo');if(response.ok){state.demo=await response.json();$('demo-banner').hidden=false;$('demo-role').hidden=false;await connect(state.demo.identities.editor.token);}else if(sessionStorage.getItem('filewise-token'))await connect(sessionStorage.getItem('filewise-token'));}catch(error){sessionStorage.removeItem('filewise-token');notice(error.message,true);}})();
