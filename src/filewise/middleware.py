@@ -389,6 +389,7 @@ class Middleware:
     def _applied(self, project, release_id, actor, action):
         with self.engine.connect(True) as db:
             db.execute("UPDATE writebacks SET status='applied',error=NULL WHERE release_id=?", (release_id,))
+            self.projects.mark_available(db, project["id"], release_id, actor)
             db.execute("UPDATE watches SET baseline=? WHERE project_id=?", (release_id, project["id"]))
             if action == "workspace.saved":
                 event = {

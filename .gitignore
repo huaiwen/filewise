@@ -1,3 +1,5 @@
+/target/
+.filewise-rust/
 .venv/
 .filewise/
 __pycache__/

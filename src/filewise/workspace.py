@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
+from .data import DataUse, SnapshotQuery, compatible
 from .engine import (
     FilewiseError,
     canonical,
@@ -23,11 +24,15 @@ from .engine import (
 from .ingest import MAX_BYTES
 from .models import ID, Check, Evidence, Model, now, timestamp
 from .projects import DEFAULT_EXCLUDES, FileMetadata, excluded, matches, oid, relative_path
+from .retrieval import SearchOptions
 
 
-class VersionQuery(Model):
-    version: str = Field(default="latest", min_length=1, max_length=128)
+class VersionQuery(SnapshotQuery):
     paths: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class QualityQuery(VersionQuery):
+    requirements: dict[str, DataUse] = Field(default_factory=dict, max_length=1000)
 
 
 class ReadQuery(VersionQuery):
@@ -35,9 +40,8 @@ class ReadQuery(VersionQuery):
     include_bytes: bool = False
 
 
-class SearchQuery(VersionQuery):
-    query: str = Field(min_length=1, max_length=200)
-    limit: int = Field(default=30, ge=1, le=100)
+class SearchQuery(SearchOptions, QualityQuery):
+    pass
 
 
 class DiffQuery(Model):
@@ -65,12 +69,17 @@ class CompileQuery(ImpactQuery):
     goal: str = Field(min_length=1, max_length=2000)
     max_chars: int = Field(default=12000, ge=100, le=50000)
     output_checks: list[Check] = Field(default_factory=list, max_length=40)
+    query: str | None = Field(default=None, min_length=1, max_length=200)
+    retrieval_mode: Literal["hybrid", "exact", "lexical", "semantic"] = "hybrid"
+    retrieval_limit: int = Field(default=5, ge=1, le=20)
+    requirements: dict[str, DataUse] = Field(default_factory=dict, max_length=1000)
+    model_use: Literal["none", "extractive", "generative"] = "none"
 
 
 class VerifyQuery(VersionQuery):
     phase: Literal["build", "preflight", "postflight"] = "build"
     task_id: ID | None = None
-    operation: Literal["read", "write", "diff", "impact", "compile", "publish"] = "read"
+    operation: Literal["read", "write", "search", "diff", "impact", "compile", "publish"] = "read"
     output_version: ID | None = None
     outputs: dict[str, str] = Field(default_factory=dict, max_length=1000)
     result: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
@@ -124,11 +133,22 @@ class Workspace:
         with self.engine.connect() as db:
             return self.projects._project(db, project_id, actor)
 
-    def _version(self, project_id, version, actor):
+    def _version(self, project_id, version, actor, as_of=None):
         self.access(project_id, actor)
+        if as_of is not None:
+            as_of = timestamp(as_of)
+            if as_of > now():
+                raise FilewiseError("as_of cannot be in the future")
         with self.engine.connect() as db:
             if version == "latest":
-                row = self.projects._latest(db, project_id)
+                row = (
+                    db.execute(
+                        "SELECT release_id FROM snapshot_availability WHERE project_id=? AND available_at<=? ORDER BY available_at DESC,rowid DESC LIMIT 1",
+                        (project_id, as_of),
+                    ).fetchone()
+                    if as_of
+                    else self.projects._latest(db, project_id)
+                )
                 version = row["release_id"] if row else None
             elif version == "published":
                 row = db.execute(
@@ -148,10 +168,141 @@ class Workspace:
                     version = commit[0]
             if not version:
                 raise FilewiseError("No matching version; capture an initial project snapshot first", 404)
-            result = self.projects._snapshot(db, project_id, version, actor)
+            result = self.projects._snapshot(db, project_id, version, actor, validate_inputs=False)
             if result[2]["revoked"]:
                 raise FilewiseError("Version is revoked", 409)
+            available = self.projects.availability(db, project_id, version)
+            if as_of and (not available or available["available_at"] > as_of):
+                raise FilewiseError("Version was not available at as_of (or availability is unrecorded)", 409)
+            self.projects.lineage(db, project_id, result[4], actor, as_of)
             return result
+
+    def _temporal(self, project_id, version, as_of):
+        with self.engine.connect() as db:
+            receipt = self.projects.availability(db, project_id, version)
+        return {
+            "as_of": as_of,
+            "availability": receipt,
+            "view": "as_known_then" if as_of else "selected_version",
+            "scope": "completed_project_snapshot; not row-level point-in-time joins",
+        }
+
+    def _data_guard(
+        self,
+        project_id,
+        version,
+        manifest,
+        paths,
+        requirements,
+        actor,
+        as_of=None,
+        model_use="none",
+        semantic=False,
+    ):
+        issues, warnings, files = [], [], []
+        if not paths:
+            warnings.append({"reason": "no_data_evidence"})
+        for path in requirements:
+            relative_path(path)
+            if path not in paths:
+                issues.append({"reason": "required_data_outside_context", "path": path})
+        for path in paths:
+            file = manifest[path]
+            metadata, quality = file.get("metadata") or {}, file.get("data_quality")
+            if quality and quality["decision"] == "BLOCKED":
+                issues.append({"reason": "data_quality_blocked", "path": path, "issues": quality["issues"]})
+            elif quality and quality["decision"] != "PASS":
+                warnings.append({"reason": "data_quality_unverified", "path": path})
+            if file.get("input_review_required"):
+                warnings.append({"reason": "input_quality_unverified", "path": path})
+            if file.get("input_quality_blocked"):
+                issues.append({"reason": "input_quality_blocked", "path": path})
+            if file.get("metadata_current") is False and (
+                metadata.get("data")
+                or metadata.get("lineage")
+                or metadata.get("processing", "source") != "source"
+            ):
+                issues.append({"reason": "stale_data_declaration", "path": path})
+            if path in requirements:
+                use = DataUse.model_validate(requirements[path])
+                issues.extend({**issue, "path": path} for issue in compatible(file.get("data_contract"), use))
+                if use.require_quality and not quality:
+                    warnings.append({"reason": "missing_data_quality_contract", "path": path})
+            if metadata.get("processing", "source") != "source" and not metadata.get("lineage"):
+                warnings.append({"reason": "processing_inputs_undeclared", "path": path})
+            if as_of and metadata.get("processing") == "model":
+                warnings.append({"reason": "model_hindsight_unverified", "path": path})
+            files.append(
+                {
+                    "path": path,
+                    "sha256": file["sha256"],
+                    "source_id": file["source_id"],
+                    "contract": file.get("data_contract"),
+                    "quality": quality,
+                }
+            )
+        with self.engine.connect() as db:
+            project = self.projects._project(db, project_id, actor)
+            for path in sorted(
+                json.loads(project["spec"]).get("data_contracts", {}).keys() - manifest.keys()
+            ):
+                issues.append({"reason": "required_project_data_missing", "path": path})
+            inputs = self.projects.lineage(db, project_id, {p: manifest[p] for p in paths}, actor, as_of)
+        for item in inputs:
+            if item["role"] != "baseline" and (item.get("data_quality") or {}).get("decision") == "BLOCKED":
+                issues.append(
+                    {"reason": "input_quality_blocked", "version": item["version"], "path": item["path"]}
+                )
+            if item["role"] != "baseline" and item.get("metadata_current") is False:
+                issues.append(
+                    {"reason": "stale_input_declaration", "version": item["version"], "path": item["path"]}
+                )
+            if as_of and (item["processing"] == "model" or item["role"] == "model"):
+                warnings.append(
+                    {"reason": "model_hindsight_unverified", "version": item["version"], "path": item["path"]}
+                )
+        if as_of and (model_use != "none" or semantic):
+            warnings.append(
+                {"reason": "model_hindsight_unverified", "model_use": model_use, "semantic_ranking": semantic}
+            )
+        return {
+            "decision": "BLOCKED" if issues else "NEEDS_REVIEW" if warnings else "PASS",
+            "issues": issues,
+            "warnings": warnings,
+            "files": files,
+            "inputs": inputs,
+            "temporal": self._temporal(project_id, version, as_of),
+            "assurance": "declared_contracts_and_inputs; no model-memory or representativeness certification",
+        }
+
+    def quality(self, project_id, query, actor):
+        result = self._version(project_id, query.version, actor, query.as_of)
+        rid, manifest = result[1]["release_id"], result[4]
+        paths = self._paths(query.paths, manifest)
+        report = self._data_guard(
+            project_id,
+            rid,
+            manifest,
+            paths,
+            {**{p: DataUse() for p in paths}, **query.requirements},
+            actor,
+            query.as_of,
+        )
+        return {
+            "version": rid,
+            **report,
+            "receipt": self._receipt(
+                project_id,
+                actor,
+                "quality",
+                {
+                    "version": rid,
+                    "query": query.model_dump(mode="json"),
+                    "decision": report["decision"],
+                    "report_sha256": digest(report),
+                },
+            ),
+        }
 
     def _receipt(self, project_id, actor, action, payload):
         receipt = {
@@ -203,8 +354,9 @@ class Workspace:
         }
 
     def ls(self, project_id, query, actor):
-        _, row, release, bundle, manifest = self._version(project_id, query.version, actor)
+        _, row, release, bundle, manifest = self._version(project_id, query.version, actor, query.as_of)
         return {
+            "temporal": self._temporal(project_id, row["release_id"], query.as_of),
             "project_id": project_id,
             "version": row["release_id"],
             "files": list(manifest.values()),
@@ -215,43 +367,36 @@ class Workspace:
         }
 
     def read(self, project_id, query, actor):
-        rid = self._version(project_id, query.version, actor)[1]["release_id"]
+        rid = self._version(project_id, query.version, actor, query.as_of)[1]["release_id"]
         result = self.projects.read(project_id, rid, query.path, actor, preview=True)
         if not query.include_bytes:
             result.pop("base64")
-        return {**result, "version": rid, "usage": "historical_or_working_knowledge"}
+        return {
+            **result,
+            "version": rid,
+            "temporal": self._temporal(project_id, rid, query.as_of),
+            "usage": "historical_or_working_knowledge",
+        }
 
     def search(self, project_id, query, actor):
-        _, row, _, _, manifest = self._version(project_id, query.version, actor)
-        selected = self._paths(query.paths, manifest)
-        hits = []
-        with self.engine.connect() as db:
-            for path in selected:
-                file = manifest[path]
-                source = db.execute(
-                    "SELECT fragments FROM sources WHERE id=?", (file["source_id"],)
-                ).fetchone()
-                for fragment in json.loads(source[0])[1:]:
-                    if query.query.casefold() in fragment["text"].casefold():
-                        hits.append(
-                            {
-                                "path": path,
-                                **fragment,
-                                "source_id": file["source_id"],
-                                "sha256": file["sha256"],
-                            }
-                        )
-                        if len(hits) > query.limit:
-                            break
-                if len(hits) > query.limit:
-                    break
-        result = {
-            "version": row["release_id"],
-            "hits": hits[: query.limit],
-            "truncated": len(hits) > query.limit,
-        }
-        result["receipt"] = self._receipt(
-            project_id, actor, "search", {"version": result["version"], "query": query.query}
+        selected = self._version(project_id, query.version, actor, query.as_of)
+        rid, manifest = selected[1]["release_id"], selected[4]
+        result = self.projects.retrieve(
+            project_id,
+            rid,
+            SearchOptions.model_validate(query.model_dump(include=SearchOptions.model_fields.keys())),
+            actor,
+        )
+        self._version(project_id, rid, actor, query.as_of)
+        result["data_guard"] = self._data_guard(
+            project_id,
+            rid,
+            manifest,
+            sorted({h["path"] for h in result["hits"]}),
+            query.requirements,
+            actor,
+            query.as_of,
+            semantic="semantic" in result["retrieval"]["channels"],
         )
         return result
 
@@ -265,6 +410,10 @@ class Workspace:
     def resolve(self, project_id, query, actor):
         project = self.access(project_id, actor)
         if query.valid_time:
+            if query.as_of:
+                raise FilewiseError(
+                    "Use snapshot as_of or reviewed-object valid_time/transaction_time, not both"
+                )
             result = self.engine.resolve(project["scope_id"], actor, query.valid_time, query.transaction_time)
             result["receipt"] = self._receipt(
                 project_id,
@@ -275,7 +424,7 @@ class Workspace:
             return result
         if query.transaction_time:
             raise FilewiseError("transaction_time requires valid_time")
-        _, row, release, bundle, manifest = self._version(project_id, query.version, actor)
+        _, row, release, bundle, manifest = self._version(project_id, query.version, actor, query.as_of)
         selected = self._paths(query.paths, manifest)
         objects = {path: bundle["state"]["objects"][manifest[path]["object_id"]] for path in selected}
         return {
@@ -284,6 +433,7 @@ class Workspace:
             "approved": bool(release["approver"]),
             "verification": bundle["verification"],
             "scope": bundle["scope"],
+            "temporal": self._temporal(project_id, row["release_id"], query.as_of),
             "fact_basis": "extracted fields and explicitly declared metadata; declarations require review",
             "receipt": self._receipt(
                 project_id, actor, "resolve", {"version": row["release_id"], "paths": selected}
@@ -319,10 +469,10 @@ class Workspace:
         }
 
     def impact(self, project_id, query, actor):
-        _, row, _, bundle, manifest = self._version(project_id, query.version, actor)
+        _, row, _, bundle, manifest = self._version(project_id, query.version, actor, query.as_of)
         before, old = {}, {}
         if query.base_version:
-            base = self._version(project_id, query.base_version, actor)
+            base = self._version(project_id, query.base_version, actor, query.as_of)
             before, old = base[3]["state"]["objects"], base[4]
         seeds = self._paths(query.paths, {**old, **manifest}) if query.paths else list(manifest)
         if query.base_version and not query.paths:
@@ -337,6 +487,7 @@ class Workspace:
             if key != "manifest"
         }
         result["version"] = row["release_id"]
+        result["temporal"] = self._temporal(project_id, row["release_id"], query.as_of)
         result["dependency_basis"] = "project contract plus versioned declared metadata"
         result["receipt"] = self._receipt(
             project_id,
@@ -347,14 +498,45 @@ class Workspace:
         return result
 
     def compile(self, project_id, query, actor):
-        _, row, _, bundle, manifest = self._version(project_id, query.version, actor)
+        _, row, _, bundle, manifest = self._version(project_id, query.version, actor, query.as_of)
         rid, objects = row["release_id"], bundle["state"]["objects"]
-        affected = self.impact(
-            project_id,
-            ImpactQuery(
-                version=rid, paths=query.paths, base_version=query.base_version, direction=query.direction
-            ),
-            actor,
+        discovery, paths = None, query.paths
+        if query.query or (not query.paths and not query.base_version):
+            found = self.search(
+                project_id,
+                SearchQuery(
+                    version=rid,
+                    as_of=query.as_of,
+                    query=query.query or query.goal[:200],
+                    paths=query.paths,
+                    mode=query.retrieval_mode,
+                    limit=query.retrieval_limit,
+                    max_per_file=1,
+                ),
+                actor,
+            )
+            discovery = {k: v for k, v in found.items() if k != "receipt"}
+            discovery["retrieval"] = {k: v for k, v in found["retrieval"].items() if k != "new_embeddings"}
+            paths = sorted({hit["path"] for hit in found["hits"]})
+        affected = (
+            self.impact(
+                project_id,
+                ImpactQuery(
+                    version=rid,
+                    as_of=query.as_of,
+                    paths=paths,
+                    base_version=query.base_version,
+                    direction=query.direction,
+                ),
+                actor,
+            )
+            if paths or discovery is None
+            else {
+                "affected": [],
+                "paths": {},
+                "frontier": [{"reason": "no_relevant_evidence", "query": discovery["query"]}],
+                "version": rid,
+            }
         )
         targets = [oid(p) for p in affected["affected"] if p in manifest]
         closure = impact(objects, targets, "reverse")
@@ -366,6 +548,12 @@ class Workspace:
                 fragments = json.loads(
                     db.execute("SELECT fragments FROM sources WHERE id=?", (file["source_id"],)).fetchone()[0]
                 )[1:]
+                selection = "dependency_file"
+                if discovery:
+                    matches = [hit for hit in discovery["hits"] if hit["path"] == path]
+                    if matches:
+                        fragments = [part for hit in matches for part in hit["parts"]]
+                        selection = "retrieved_evidence"
                 snippets = []
                 for fragment in fragments:
                     text = fragment["text"][:remaining]
@@ -380,6 +568,7 @@ class Workspace:
                         "source_id": file["source_id"],
                         "metadata": file.get("metadata"),
                         "metadata_current": file.get("metadata_current"),
+                        "selection": selection,
                         "fragments": snippets,
                         "evidence": objects[file["object_id"]]["evidence"],
                     }
@@ -387,12 +576,30 @@ class Workspace:
         while context and len(canonical(context)) > query.max_chars:
             context.pop()
             truncated = True
-        tools = ["read", "diff", "impact", "compile"] + (["write"] if "editor" in actor.roles else [])
+        tools = ["read", "search", "diff", "impact", "compile"] + (
+            ["write"] if "editor" in actor.roles and not query.as_of else []
+        )
         for check in query.output_checks:
             if check.object_id != "result" or check.reference_object:
                 raise FilewiseError("Output checks must target result fields without external references")
+        task_paths = sorted(p for p, f in manifest.items() if f["object_id"] in closure["affected"])
+        guard = self._data_guard(
+            project_id,
+            rid,
+            manifest,
+            task_paths,
+            query.requirements,
+            actor,
+            query.as_of,
+            query.model_use,
+            semantic=bool(discovery and "semantic" in discovery["retrieval"]["channels"]),
+        )
         task = {
             "schema": "filewise/task-v1",
+            "as_of": query.as_of,
+            "requirements": {p: v.model_dump(mode="json") for p, v in query.requirements.items()},
+            "model_use": query.model_use,
+            "data_guard": guard,
             "project_id": project_id,
             "version": rid,
             "actor": actor.id,
@@ -400,6 +607,7 @@ class Workspace:
             "paths": sorted(p for p, f in manifest.items() if f["object_id"] in closure["affected"]),
             "context": context,
             "context_truncated": truncated,
+            "discovery": discovery,
             "impact": {k: v for k, v in affected.items() if k != "receipt"},
             "regression": plan,
             "output_checks": [c.model_dump(mode="json") for c in query.output_checks],
@@ -410,7 +618,9 @@ class Workspace:
                     "required": ["request_id", "message", "changes"],
                     "effect": "save working files, not publish",
                 }
-            },
+            }
+            if "write" in tools
+            else {},
             "approval_points": ["production approval and activation require independent operators"],
             "refusal_conditions": plan["refusal_conditions"]
             + ["stale_write_base", "unavailable_source", "output_assertion_failed"],
@@ -432,6 +642,7 @@ class Workspace:
     def verify(self, project_id, query, actor):
         self.access(project_id, actor)
         task = None
+        cutoff = query.as_of
         if query.task_id:
             with self.engine.connect() as db:
                 row = db.execute(
@@ -443,29 +654,55 @@ class Workspace:
                 if digest(task) != query.task_id or row["actor"] != actor.id:
                     raise FilewiseError("Task integrity or identity mismatch", 403)
             version = task["version"]
+            if query.as_of and query.as_of != task.get("as_of"):
+                raise FilewiseError("Verification as_of differs from the pinned task", 409)
+            cutoff = task.get("as_of")
             if query.version not in ("latest", version):
                 raise FilewiseError("Verification version differs from the pinned task", 409)
         else:
             version = query.version
-        project, row, release, bundle, manifest = self._version(project_id, version, actor)
+        project, row, release, bundle, manifest = self._version(project_id, version, actor, cutoff)
         rid = row["release_id"]
+        selected = self._paths(query.paths or (task["paths"] if task else []), manifest)
+        guard = self._data_guard(
+            project_id,
+            rid,
+            manifest,
+            task["paths"] if task else selected,
+            task.get("requirements", {}) if task else {},
+            actor,
+            cutoff,
+            task.get("model_use", "none") if task else "none",
+            semantic=bool(
+                task and task.get("discovery") and "semantic" in task["discovery"]["retrieval"]["channels"]
+            ),
+        )
         if query.phase == "build":
             result = self.engine.verify(rid, actor)
             return {
                 **result,
                 "version": rid,
                 "phase": "build",
-                "decision": result["build"]["decision"],
+                "decision": max(
+                    (result["build"]["decision"], guard["decision"]),
+                    key=("PASS", "NEEDS_REVIEW", "BLOCKED").index,
+                ),
+                "data_guard": guard,
                 "production_authorized": False,
                 "receipt": self._receipt(project_id, actor, "verify", {"version": rid, "phase": query.phase}),
             }
         issues, tests = [], []
+        review_required = False
+        if cutoff and query.operation == "write":
+            issues.append({"reason": "historical_task_is_read_only"})
         if query.operation == "publish" or (query.operation == "write" and "editor" not in actor.roles):
             issues.append({"reason": "operation_not_authorized"})
         if task and query.operation not in task["tools"]:
             issues.append({"reason": "tool_outside_compiled_contract"})
-        if task and bundle["verification"]["decision"] != "PASS":
+        if task and bundle["verification"]["decision"] == "BLOCKED":
             issues.append({"reason": "knowledge_regression_failed", "verification": bundle["verification"]})
+        if task and bundle["verification"]["decision"] == "NEEDS_REVIEW":
+            review_required = True
         if task and task["context_truncated"]:
             issues.append(
                 {"reason": "incomplete_context", "action": "Compile with a larger budget or narrower paths"}
@@ -476,11 +713,12 @@ class Workspace:
                     issues.append({"reason": "stale_declared_metadata", "path": entry["path"]})
         if task and task["frontier"]:
             issues.append({"reason": "incomplete_task_evidence", "frontier": task["frontier"]})
-        selected = self._paths(query.paths or (task["paths"] if task else []), manifest)
         if task and not set(selected) <= set(task["paths"]):
             issues.append({"reason": "paths_outside_compiled_contract"})
+        issues.extend(guard["issues"])
+        review_required |= guard["decision"] == "NEEDS_REVIEW"
         if task:
-            instant = now()
+            instant = cutoff or now()
             for path in selected:
                 obj = bundle["state"]["objects"][manifest[path]["object_id"]]
                 if obj["valid_from"] > instant or (obj["valid_until"] and obj["valid_until"] <= instant):
@@ -493,7 +731,9 @@ class Workspace:
             except FilewiseError as exc:
                 issues.append({"reason": str(exc)})
         if query.phase == "postflight":
-            output = self._version(project_id, query.output_version or rid, actor)
+            output = self._version(
+                project_id, query.output_version or rid, actor, cutoff if query.operation != "write" else None
+            )
             for path, sha in query.outputs.items():
                 relative_path(path)
                 actual = output[4].get(path, {}).get("sha256")
@@ -560,7 +800,11 @@ class Workspace:
         if any(not test["passed"] for test in tests):
             issues.append({"reason": "output_verification_failed"})
         decision = (
-            "BLOCKED" if issues else "NEEDS_REVIEW" if query.phase == "postflight" and not tests else "PASS"
+            "BLOCKED"
+            if issues
+            else "NEEDS_REVIEW"
+            if review_required or (query.phase == "postflight" and not tests)
+            else "PASS"
         )
         result = {
             "version": rid,
@@ -571,6 +815,7 @@ class Workspace:
             "issues": issues,
             "tests": tests,
             "production_authorized": False,
+            "data_guard": guard,
         }
         result["receipt"] = self._receipt(
             project_id, actor, "verify", {k: v for k, v in result.items() if k != "tests"}

@@ -181,12 +181,49 @@ def verify(state: dict, affected: dict, plan: dict, evidence_issues: list[dict])
             except (TypeError, ValueError):
                 passed = False
         results.append({"id": check["id"], "passed": bool(passed), "actual": actual, "expected": expected})
+    needs_review = False
+    for oid, obj in objects.items():
+        fields = obj.get("fields", {})
+        metadata = fields.get("metadata") if isinstance(fields.get("metadata"), dict) else {}
+        if fields.get("input_quality_blocked"):
+            issues.append({"reason": "input_quality_blocked", "object_id": oid})
+        needs_review |= bool(fields.get("input_review_required")) or (
+            metadata.get("processing", "source") != "source" and not metadata.get("lineage")
+        )
+        if fields.get("metadata_current") is False and (
+            metadata.get("data")
+            or metadata.get("lineage")
+            or metadata.get("processing", "source") != "source"
+        ):
+            issues.append({"reason": "stale_data_declaration", "object_id": oid})
+        quality = fields.get("data_quality")
+        if quality:
+            if (
+                not isinstance(quality, dict)
+                or quality.get("schema") != "filewise/data-quality-v1"
+                or quality.get("decision") not in ("PASS", "BLOCKED", "NEEDS_REVIEW")
+                or not isinstance(quality.get("tests"), list)
+                or any(
+                    not isinstance(test, dict)
+                    or not isinstance(test.get("id"), str)
+                    or type(test.get("passed")) is not bool
+                    for test in quality["tests"]
+                )
+            ):
+                issues.append({"reason": "invalid_data_quality_report", "object_id": oid})
+                continue
+            results.extend({**test, "id": "data:" + oid + ":" + test["id"]} for test in quality["tests"])
+            if quality["decision"] == "BLOCKED":
+                issues.append(
+                    {"reason": "data_quality_blocked", "object_id": oid, "issues": quality.get("issues", [])}
+                )
+            needs_review |= quality["decision"] != "PASS"
     if any(not r["passed"] for r in results):
         issues.append({"reason": "failed_regression"})
     if not objects:
         issues.append({"reason": "empty_state"})
     # A release without a domain oracle is reviewable, never implicitly production-safe.
-    decision = "BLOCKED" if issues else ("PASS" if results else "NEEDS_REVIEW")
+    decision = "BLOCKED" if issues else ("PASS" if results and not needs_review else "NEEDS_REVIEW")
     return {"decision": decision, "issues": issues, "tests": results, "phase": "build"}
 
 

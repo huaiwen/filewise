@@ -6,7 +6,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request, UploadFile
+from fastapi import Depends, FastAPI, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer
 from pydantic import Field, ValidationError
@@ -33,6 +33,7 @@ from .workspace import (
     CompileQuery,
     DiffQuery,
     ImpactQuery,
+    QualityQuery,
     ReadQuery,
     ResolveQuery,
     SearchQuery,
@@ -278,6 +279,10 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
     def workspace_search(project_id: str, data: SearchQuery, who=Depends(actor)):
         return workspace.search(project_id, data, who)
 
+    @app.post("/api/workspaces/{project_id}/quality")
+    def workspace_quality(project_id: str, data: QualityQuery, who=Depends(actor)):
+        return workspace.quality(project_id, data, who)
+
     @app.post("/api/workspaces/{project_id}/write")
     def workspace_write(project_id: str, data: WriteQuery, who=Depends(actor)):
         return workspace.write(project_id, data, who)
@@ -304,11 +309,14 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
 
     @app.post("/api/workspaces/{project_id}/recover")
     def workspace_recover(project_id: str, data: VersionQuery, who=Depends(actor)):
+        if data.as_of:
+            raise FilewiseError("Recovery does not accept historical as_of")
         return workspace.recover(project_id, data.version, who)
 
     @app.post("/api/workspaces/{project_id}/trace")
     def workspace_trace(project_id: str, data: VersionQuery, who=Depends(actor)):
-        return workspace.trace(project_id, data.version, who)
+        version = workspace._version(project_id, data.version, who, data.as_of)[1]["release_id"]
+        return workspace.trace(project_id, version, who)
 
     @app.get("/api/workspaces/{project_id}/evidence/{source_id}")
     def workspace_evidence(project_id: str, source_id: str, locator: str | None = None, who=Depends(actor)):
@@ -431,8 +439,30 @@ def create_app(engine: Engine, tokens: dict, *, showcase=None, local_setup=False
         return projects.read(session["project_id"], session["release_id"], path, who, session_id=session_id)
 
     @app.get("/api/sessions/{session_id}/search")
-    def search_files(session_id: str, q: str, who=Depends(actor)):
-        return projects.search(session_id, q, who)
+    def search_files(
+        session_id: str,
+        q: str,
+        mode: str = "hybrid",
+        limit: int = 30,
+        paths: list[str] = Query(default=[]),
+        tags: list[str] = Query(default=[]),
+        min_similarity: float = 0.45,
+        max_per_file: int = 3,
+        rebuild: bool = False,
+        who=Depends(actor),
+    ):
+        return projects.search(
+            session_id,
+            q,
+            who,
+            mode=mode,
+            limit=limit,
+            paths=paths,
+            tags=tags,
+            min_similarity=min_similarity,
+            max_per_file=max_per_file,
+            rebuild=rebuild,
+        )
 
     @app.get("/console.js")
     def script():

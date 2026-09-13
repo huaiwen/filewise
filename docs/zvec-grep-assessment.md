@@ -1,6 +1,10 @@
 # zvec-grep 与 Filewise：定位比较与接入决策
 
-## 结论
+## 当前实现更新
+
+Filewise 已将相关内容发现纳入自身核心流程：精确匹配 + SQLite FTS5/BM25 + 可选本地 FastEmbed 多语言向量 + RRF，并连接 Agent CLI、工作台和 search-driven compile。复用现有文档解析与不可变来源，无需再引入 Node 检索层。**没有安装 zvec 或 zvec-grep**；下面保留早期固定提交评估，原“留作可选检索层”不代表当前 Filewise 缺少检索功能。详见[现有检索实现](retrieval.md)。
+
+## 早期结论
 
 实现状态（2026-09-08 续接）：Filewise 已建立独立的来源存储、确定性内核、CLI/REST 和发布运行时；本文件所述 zvec-grep 适配仍未实际接入。基础运行和测试均不依赖 zvec-grep，不创建或刷新其持久索引。
 

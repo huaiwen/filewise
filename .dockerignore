@@ -1,7 +1,10 @@
 *
-!pyproject.toml
+!Cargo.toml
+!Cargo.lock
 !README.md
-!src/
-!src/**
-src/**/__pycache__/
-src/**/*.pyc
+!rust/
+!rust/*.rs
+!rust/ui/
+!rust/ui/*
+!docs/
+!docs/rust.md

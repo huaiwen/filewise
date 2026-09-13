@@ -267,7 +267,9 @@ class WorkspaceTests(unittest.TestCase):
             )["decision"],
             "BLOCKED",
         )
-        bounded = self.call("compile", {"goal": "Bounded context", "max_chars": 100})
+        bounded = self.call(
+            "compile", {"goal": "Bounded context", "paths": ["delivery.md"], "max_chars": 100}
+        )
         self.assertLessEqual(sum(len(f["text"]) for c in bounded["context"] for f in c["fragments"]), 100)
         self.assertTrue(bounded["context_truncated"])
         self.write({"delivery.md": {"text": "Changed after task compilation"}}, base=rid, key="next")

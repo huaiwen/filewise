@@ -10,10 +10,12 @@ import secrets
 import stat
 import uuid
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from .changes import fragment_diff, json_fields
+from .data import DataContract, DataInput, quality
 from .engine import FilewiseError, canonical, digest, require
 from .ingest import MAX_BYTES, extract
 from .models import ID, BuildRequest, Check, Evidence, Model, Revision, Scope, now, timestamp
@@ -82,6 +84,14 @@ class ProjectSpec(Model):
     checks: list[FileCheck] = Field(default_factory=list, max_length=40)
     excludes: list[str] = Field(default_factory=list, max_length=50)
     includes: list[str] = Field(default_factory=lambda: ["**"], min_length=1, max_length=50)
+    data_contracts: dict[str, DataContract] = Field(default_factory=dict, max_length=1000)
+
+    @field_validator("data_contracts")
+    @classmethod
+    def data_paths(cls, value):
+        for path in value:
+            relative_path(path)
+        return value
 
     @field_validator("includes")
     @classmethod
@@ -102,6 +112,18 @@ class FileMetadata(Model):
     authority: int = Field(default=100, ge=0, le=1000)
     valid_from: str | None = None
     valid_until: str | None = None
+    data: DataContract | None = None
+    processing: Literal["source", "deterministic", "model"] = "source"
+    lineage: list[DataInput] = Field(default_factory=list, max_length=100)
+
+    @field_validator("lineage")
+    @classmethod
+    def input_paths(cls, values):
+        for item in values:
+            relative_path(item.path)
+        if len({(item.version, item.path, item.role) for item in values}) != len(values):
+            raise ValueError("Duplicate processing input")
+        return values
 
     @field_validator("depends_on")
     @classmethod
@@ -253,6 +275,11 @@ class Projects:
                     report_digest TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS file_sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
                     release_id TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS snapshot_availability(
+                    release_id TEXT PRIMARY KEY REFERENCES project_snapshots(release_id),
+                    project_id TEXT NOT NULL, available_at TEXT NOT NULL,
+                    actor TEXT NOT NULL, digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS availability_time ON snapshot_availability(project_id,available_at);
                 CREATE TABLE IF NOT EXISTS project_commits(id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id),
                     release_id TEXT NOT NULL REFERENCES project_snapshots(release_id),
@@ -271,6 +298,15 @@ class Projects:
         require(actor, "editor")
         spec = ProjectSpec.model_validate(spec)
         checks = [Check(id="file-manifest", object_id="manifest", field="file_count", op="gte", expected=1)]
+        if spec.data_contracts:
+            checks.append(
+                Check(
+                    id="data-contract-files",
+                    object_id="manifest",
+                    field="data_contracts_present",
+                    expected=True,
+                )
+            )
         for item in spec.checks:
             checks.append(
                 Check(
@@ -427,6 +463,42 @@ class Projects:
             (project_id,),
         ).fetchone()
 
+    def mark_available(self, db, project_id, release_id, actor):
+        """Commit with the completed snapshot/write status, never at candidate creation."""
+        if db.execute("SELECT 1 FROM snapshot_availability WHERE release_id=?", (release_id,)).fetchone():
+            return
+        last = db.execute(
+            "SELECT MAX(available_at) FROM snapshot_availability WHERE project_id=?", (project_id,)
+        ).fetchone()[0]
+        instant = now()
+        if last and instant < last:
+            raise FilewiseError(
+                "Server clock moved backwards; repair clock before recording availability", 409
+            )
+        receipt = {
+            "release_id": release_id,
+            "project_id": project_id,
+            "available_at": instant,
+            "actor": actor.id,
+        }
+        db.execute(
+            "INSERT INTO snapshot_availability VALUES(?,?,?,?,?)", (*receipt.values(), digest(receipt))
+        )
+        self.engine._audit(db, "project." + project_id, actor, "snapshot.available", receipt)
+
+    def availability(self, db, project_id, release_id):
+        row = db.execute(
+            "SELECT * FROM snapshot_availability WHERE project_id=? AND release_id=?",
+            (project_id, release_id),
+        ).fetchone()
+        if not row:
+            return None
+        receipt = dict(row)
+        signature = receipt.pop("digest")
+        if digest(receipt) != signature:
+            raise FilewiseError("Availability receipt integrity failed", 409)
+        return {**receipt, "id": signature, "basis": "filewise_completed_snapshot; not supplier event time"}
+
     def snapshot(
         self,
         project_id,
@@ -500,6 +572,85 @@ class Projects:
                 fields["metadata_current"] = stored_meta["content_sha256"] == sha
                 if fields["metadata_current"]:
                     fields.update({"fact:" + key: value for key, value in stored_meta["facts"].items()})
+            lineage_evidence = []
+            contract = spec.data_contracts.get(path)
+            declared_data = (stored_meta or {}).get("data")
+            if contract or declared_data:
+                effective = contract or DataContract.model_validate(declared_data)
+                previous, quality_base = None, None
+                prior_file = prior_manifest.get(path, {})
+                if prior_file and any(c.op == "distinct_count_change" for c in effective.checks):
+                    quality_base = prior_id
+                    if prior_file["sha256"] == sha and canonical(
+                        prior_file.get("data_contract")
+                    ) == canonical(effective):
+                        # An unchanged resync must not erase a failed cohort comparison by comparing to itself.
+                        quality_base = prior_file.get("data_quality", {}).get("baseline")
+                    if quality_base:
+                        with self.engine.connect() as db:
+                            baseline_file = self._snapshot(db, project_id, quality_base, actor)[4].get(path)
+                            if baseline_file:
+                                prior_source = db.execute(
+                                    "SELECT body,fragments FROM sources WHERE id=?",
+                                    (baseline_file["source_id"],),
+                                ).fetchone()
+                                previous = (
+                                    bytes(prior_source["body"]),
+                                    json.loads(prior_source["fragments"])[1:],
+                                )
+                report = quality(path, body, effective, fragments, previous=previous, baseline=quality_base)
+                if declared_data and contract and canonical(declared_data) != canonical(contract):
+                    report["issues"].append({"reason": "project_data_contract_mismatch"})
+                    report["decision"] = "BLOCKED"
+                if declared_data and not fields.get("metadata_current"):
+                    report["issues"].append({"reason": "stale_data_contract"})
+                    report["decision"] = "BLOCKED"
+                fields["data_contract"] = effective.model_dump(mode="json")
+                fields["data_quality"] = report
+            input_refs = list((stored_meta or {}).get("lineage", []))
+            quality_base = fields.get("data_quality", {}).get("baseline")
+            if quality_base and previous:
+                input_refs.append({"version": quality_base, "path": path, "role": "baseline"})
+            if input_refs:
+                bound = []
+                with self.engine.connect() as db:
+                    for item in input_refs:
+                        ref = self._snapshot(db, project_id, item["version"], actor)
+                        receipt = self.availability(db, project_id, item["version"])
+                        if ref[2]["revoked"] or receipt is None or item["path"] not in ref[4]:
+                            raise FilewiseError(
+                                "Lineage requires an available, unrevoked version and path", 409
+                            )
+                        source_file = ref[4][item["path"]]
+                        if item["role"] != "baseline":
+                            fields["input_quality_blocked"] = (
+                                fields.get("input_quality_blocked", False)
+                                or source_file.get("input_quality_blocked", False)
+                                or source_file.get("metadata_current") is False
+                                or (source_file.get("data_quality") or {}).get("decision") == "BLOCKED"
+                            )
+                            fields["input_review_required"] = (
+                                fields.get("input_review_required", False)
+                                or source_file.get("input_review_required", False)
+                                or (source_file.get("data_quality") or {}).get("decision") == "NEEDS_REVIEW"
+                                or (
+                                    (source_file.get("metadata") or {}).get("processing", "source")
+                                    != "source"
+                                    and not (source_file.get("metadata") or {}).get("lineage")
+                                )
+                            )
+                        bound.append(
+                            {
+                                **item,
+                                "sha256": source_file["sha256"],
+                                "source_id": source_file["source_id"],
+                                "available_at": receipt["available_at"],
+                            }
+                        )
+                        lineage_evidence.extend(
+                            ref[3]["state"]["objects"][source_file["object_id"]]["evidence"]
+                        )
+                fields["lineage"] = bound
             dependencies = sorted(
                 set(spec.dependencies.get(path, [])) | set((stored_meta or {}).get("depends_on", []))
             )
@@ -559,7 +710,12 @@ class Projects:
                 authority=(stored_meta or {}).get("authority", 100),
                 depends_on=[oid(p) for p in dependencies],
                 evidence=[Evidence(source_id=source["id"], locator=anchor["locator"], quote=sha)]
-                + [Evidence.model_validate(e) for e in (stored_meta or {}).get("evidence", [])],
+                + [
+                    Evidence.model_validate(e)
+                    for e in {
+                        canonical(e): e for e in [*(stored_meta or {}).get("evidence", []), *lineage_evidence]
+                    }.values()
+                ],
             )
             self.engine.add_revision(revision, actor)
             revisions.append(revision.id)
@@ -580,7 +736,14 @@ class Projects:
             object_id="manifest",
             kind="record",
             title="Project manifest",
-            fields={"file_count": len(files)},
+            fields={
+                "file_count": len(files),
+                **(
+                    {"data_contracts_present": set(spec.data_contracts) <= files.keys()}
+                    if spec.data_contracts
+                    else {}
+                ),
+            },
             depends_on=[oid(p) for p in files],
             valid_from=instant,
             evidence=[
@@ -633,6 +796,8 @@ class Projects:
                     digest(report),
                 ),
             )
+            if not pending_write:
+                self.mark_available(db, project_id, release["id"], actor)
         return self.inspect(project_id, release["id"], actor)
 
     def _compare_manifests(self, old, manifest, state, before_objects, actor):
@@ -676,7 +841,45 @@ class Projects:
             },
         }
 
-    def _snapshot(self, db, project_id, release_id, actor):
+    def lineage(self, db, project_id, manifest, actor, as_of=None):
+        queue = [item for file in manifest.values() for item in file.get("lineage", [])]
+        seen, inputs, versions = set(), [], {}
+        while queue:
+            item = queue.pop()
+            key = (item["version"], item["path"], item["role"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(seen) > 1000:
+                raise FilewiseError("Processing lineage exceeds 1,000 inputs", 413)
+            if item["version"] not in versions:
+                versions[item["version"]] = self._snapshot(
+                    db, project_id, item["version"], actor, validate_inputs=False
+                )
+            ref = versions[item["version"]]
+            receipt = self.availability(db, project_id, item["version"])
+            file = ref[4].get(item["path"])
+            if ref[2]["revoked"] or not receipt or not file:
+                raise FilewiseError("Processing input version is unavailable", 409)
+            if (
+                any(item[k] != file[k] for k in ("sha256", "source_id"))
+                or item["available_at"] != receipt["available_at"]
+            ):
+                raise FilewiseError("Processing input binding failed", 409)
+            if as_of and receipt["available_at"] > as_of:
+                raise FilewiseError("Processing input became available after as_of", 409)
+            inputs.append(
+                {
+                    **item,
+                    "processing": (file.get("metadata") or {}).get("processing", "source"),
+                    "metadata_current": file.get("metadata_current"),
+                    "data_quality": file.get("data_quality"),
+                }
+            )
+            queue.extend(file.get("lineage", []))
+        return inputs
+
+    def _snapshot(self, db, project_id, release_id, actor, *, validate_inputs=True):
         project = self._project(db, project_id, actor)
         row = db.execute(
             "SELECT * FROM project_snapshots WHERE project_id=? AND release_id=?", (project_id, release_id)
@@ -701,6 +904,8 @@ class Projects:
         expected = {o["fields"]["path"] for o in bundle["state"]["objects"].values() if "path" in o["fields"]}
         if expected != manifest.keys():
             raise FilewiseError("Project manifest incomplete", 409)
+        if validate_inputs:
+            self.lineage(db, project_id, manifest, actor)
         return project, row, release, bundle, manifest
 
     def inspect(self, project_id, release_id, actor):
@@ -714,6 +919,7 @@ class Projects:
                 "approver": release["approver"],
                 "revoked": bool(release["revoked"]),
                 "created_at": row["created_at"],
+                "availability": self.availability(db, project_id, release_id),
                 "verification": bundle["verification"],
             }
 
@@ -861,26 +1067,65 @@ class Projects:
             self._live(project, manifest)
             return {**dict(row), "files": list(manifest.values())}
 
-    def search(self, session_id, query, actor):
-        if not query or len(query) > 200:
-            raise FilewiseError("Query must contain 1–200 characters")
+    def retrieve(self, project_id, release_id, query, actor, *, session_id=None):
+        from .retrieval import Retrieval, normalized
+
+        def authorized():
+            if session_id:
+                session = self.session_info(session_id, actor)
+                if session["project_id"] != project_id or session["release_id"] != release_id:
+                    raise FilewiseError("Session version mismatch", 403)
+            elif actor.audience == "agent" and project_id not in actor.workspace_projects:
+                raise FilewiseError("This Agent has no workspace search grant", 403)
+            elif (
+                not actor.roles & {"editor", "reviewer", "publisher"}
+                and project_id not in actor.workspace_projects
+            ):
+                raise FilewiseError("Working knowledge search requires a workspace or review grant", 403)
+            with self.engine.connect() as db:
+                result = self._snapshot(db, project_id, release_id, actor)
+                if result[2]["revoked"]:
+                    raise FilewiseError("Search version is revoked", 409)
+                return result[4]
+
+        manifest = authorized()
+        for path in query.paths:
+            relative_path(path)
+            if path not in manifest:
+                raise FilewiseError("Search path is outside the selected version", 404)
+        selected = {
+            p: f
+            for p, f in manifest.items()
+            if (not query.paths or p in query.paths)
+            and {normalized(t) for t in query.tags}
+            <= {normalized(t) for t in f.get("metadata", {}).get("tags", [])}
+        }
+        result = Retrieval(self.engine).search(selected, query)
+        authorized()  # Inference may take time; policy or revocation changes must still stop disclosure.
+        receipt = {
+            "project_id": project_id,
+            "release_id": release_id,
+            "actor": actor.id,
+            "query": query.query,
+            "options": query.model_dump(),
+            "chunks": [h["chunk_id"] for h in result["hits"]],
+            "retrieval": result["retrieval"],
+            "recorded_at": now(),
+            "session_id": session_id,
+        }
+        receipt["id"] = digest(receipt)
+        with self.engine.connect(True) as db:
+            self.engine._audit(db, "project." + project_id, actor, "file.search", receipt)
+        return {**result, "version": release_id, "release_id": release_id, "receipt": receipt}
+
+    def search(self, session_id, query, actor, **options):
+        from .retrieval import SearchOptions
+
         session = self.session_info(session_id, actor)
-        hits = []
-        # ponytail: bounded O(n²) live scan; batch one validated read transaction when large projects need it.
-        for file in session["files"]:
-            data = self.read(
-                session["project_id"], session["release_id"], file["path"], actor, session_id=session_id
-            )
-            for fragment in data["fragments"]:
-                if query.casefold() in fragment["text"].casefold():
-                    hits.append(
-                        {
-                            "path": file["path"],
-                            **fragment,
-                            "source_id": file["source_id"],
-                            "sha256": file["sha256"],
-                        }
-                    )
-                    if len(hits) >= 100:
-                        return {"release_id": session["release_id"], "hits": hits, "truncated": True}
-        return {"release_id": session["release_id"], "hits": hits, "truncated": False}
+        return self.retrieve(
+            session["project_id"],
+            session["release_id"],
+            SearchOptions(query=query, **options),
+            actor,
+            session_id=session_id,
+        )

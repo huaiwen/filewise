@@ -178,6 +178,7 @@ function renderView(){
   for(const button of document.querySelectorAll('[data-view]'))button.setAttribute('aria-selected',String(button.dataset.view===state.view));
   const content=$('content');content.setAttribute('aria-labelledby','tab-'+state.view);content.replaceChildren();
   if(!state.snapshot)return;
+  if(state.view==='search'){renderSearch(content);return;}
   if(state.view==='changes'){renderChanges(content);return;}
   if(state.view==='impact'){renderImpact(content);return;}
   if(state.view==='history'){renderHistory(content);return;}
@@ -194,6 +195,20 @@ function renderView(){
   for(const fragment of file.fragments.slice(0,1000)){const item=el('div',undefined,'fragment');item.append(el('span',fragment.locator,'locator'),el('p',fragment.text));content.append(item);}
   if(!file.fragments.length)content.append(empty('原文件已保存','此格式没有可用的文本提取结果。可下载原文件，内容完整性仍受版本管理。'));
   if(file.fragments.length>1000)content.append(el('p','界面显示前 1,000 个文本片段。','fine'));
+}
+function renderSearch(content){
+  content.append(el('h2','查找相关知识'),el('p','检索当前选中版本的内容、文件名与有效 metadata；结果附原文位置和检索依据。','fine'));
+  const form=el('form',undefined,'retrieval-form'),input=el('input'),mode=el('select'),submit=el('button','搜索','primary'),results=el('div');
+  input.type='search';input.required=true;input.maxLength=200;input.placeholder='例如：设备交付前如何核对压力？';input.setAttribute('aria-label','知识搜索问题');input.value=state.searchText||'';
+  mode.setAttribute('aria-label','检索方式');for(const [value,title] of [['hybrid','混合检索'],['lexical','关键词 BM25'],['exact','精确匹配'],['semantic','语义检索']]){const option=el('option',title);option.value=value;mode.append(option);}mode.value=state.searchMode||'hybrid';submit.type='submit';results.setAttribute('aria-live','polite');form.append(input,mode,submit);content.append(form,results);
+  form.addEventListener('submit',run(async event=>{event.preventDefault();const project=state.project.id,version=state.snapshot.release_id,query=input.value.trim();if(!query)return;state.searchText=query;state.searchMode=mode.value;submit.disabled=true;results.replaceChildren(el('p','正在检索当前版本…','fine'));
+    try{let found;if(has('editor')||has('reviewer')||has('publisher'))found=await api('workspaces/'+enc(project)+'/search','POST',{version,query,mode:mode.value,limit:15});else{const session=await api(projectPath()+'/sessions?release_id='+enc(version),'POST');found=await api('sessions/'+session.session_id+'/search?'+new URLSearchParams({q:query,mode:mode.value,limit:'15'}));}
+      if(!form.isConnected||state.project.id!==project||state.snapshot.release_id!==version)return;results.replaceChildren(el('p','版本 '+short(found.version)+' · '+found.retrieval.channels.join(' + ')+' · '+found.retrieval.chunks+' 个片段'+(found.retrieval.semantic==='disabled'?' · 本机语义模型尚未配置':''),'fine'));
+      if(!found.hits.length)results.append(empty('未找到相关内容','换一种表述、调整检索方式或切换版本；不会自动混入其他版本。'));
+      for(const hit of found.hits){const item=el('article',undefined,'search-hit'),open=el('button',hit.path);open.type='button';open.addEventListener('click',run(async()=>{if(state.snapshot.release_id!==version)return;state.view='files';await loadFile(hit.path);const line=hit.locator.match(/^line:(\d+)$/);const target=line?$('content').querySelectorAll('.text-line')[Number(line[1])-1]:[...$('content').querySelectorAll('[title]')].find(node=>node.title===hit.locator);target?.scrollIntoView({block:'center'});}));item.append(open,el('p',hit.locator+' · '+Object.keys(hit.matches).join(' + ')+' · RRF '+hit.score,'fine'),el('p',hit.text,'search-excerpt'),el('p',(hit.kind==='metadata'?'版本化声明（非原文事实） · ':'')+'来源 '+short(hit.source_id)+' · SHA-256 '+short(hit.sha256),'fine'));results.append(item);}
+      if(found.truncated)results.append(el('p','还有更多匹配，可缩小查询或使用 CLI 调整数量。','fine'));
+    }catch(error){if(form.isConnected)results.replaceChildren(el('p',error.message,'error'));}finally{submit.disabled=false;}
+  }));
 }
 function renderSheet(content,fragments){
   const sheets=new Map();
@@ -314,7 +329,7 @@ async function refreshConnections(){
   const changed=JSON.stringify(data)!==JSON.stringify(state.connections);state.connections=data;
   $('connection-summary').hidden=false;
   const verified=data.agents.filter(a=>a.state==='verified'), configured=data.agents.filter(a=>a.configured);
-  $('connection-summary').textContent=verified.length?'已收到 '+verified.map(a=>a.name).join('、')+' 的受控工具请求 · 修改会进入审核流程':configured.length?'已安装 Agent 配置，等待在 Agent 中新开任务验证':'Agent 尚未连接 · 写入前处理需要先连接 Agent';
+  $('connection-summary').textContent=verified.length?'已收到 '+verified.map(a=>a.name).join('、')+' 的受控工具请求 · 修改会进入审核流程':configured.length?'已安装 Agent 配置，等待在 Agent 中新开任务验证':'原生受控连接尚未配置 · Filewise CLI 读写与检索无需此连接';
   if(changed&&$('setup-dialog').open&&!$('connection-step').hidden)renderConnections();
 }
 function renderConnections(){

@@ -1,0 +1,46 @@
+[package]
+name = "filewise"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.86"
+description = "Native file versioning, evidence and guarded knowledge operations"
+publish = false
+include = ["Cargo.toml", "Cargo.lock", "rust/*.rs", "rust/ui/*", "README.md", "README.en.md", "docs/rust.md", "docs/folders.md"]
+
+[lib]
+path = "rust/lib.rs"
+
+[[bin]]
+name = "filewise"
+path = "rust/main.rs"
+
+[[test]]
+name = "native"
+path = "rust/tests.rs"
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+bigdecimal = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+csv = "1.3"
+fs2 = "0.4"
+globset = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "0.38", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+subtle = "2.6"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"

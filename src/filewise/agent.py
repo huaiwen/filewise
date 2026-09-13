@@ -110,13 +110,28 @@ def arguments(commands):
         action.add_argument(
             "--version", help="latest (default for workspace), published, HEAD, snapshot or commit ID"
         )
+        action.add_argument("--as-of", help="UTC completed-snapshot cutoff (workspace only)")
+        if name == "search":
+            action.add_argument(
+                "--requirements", type=Path, help="JSON mapping of paths to data-use requirements"
+            )
         if name == "read":
             action.add_argument("path")
             action.add_argument("--output", type=Path, help="Write exact original bytes; refuses overwrite")
         if name == "search":
             action.add_argument("query")
+            action.add_argument(
+                "--mode", choices=("hybrid", "exact", "lexical", "semantic"), default="hybrid"
+            )
+            action.add_argument("--limit", type=int, default=30)
+            action.add_argument("--path", action="append", default=[], dest="paths")
+            action.add_argument("--tag", action="append", default=[], dest="tags")
+            action.add_argument("--min-similarity", type=float, default=0.45)
+            action.add_argument("--max-per-file", type=int, default=3)
+            action.add_argument("--rebuild", action="store_true")
     for name in (
         "versions",
+        "quality",
         "sync",
         "resolve",
         "diff",
@@ -131,10 +146,16 @@ def arguments(commands):
     ):
         action = actions.add_parser(name)
         action.add_argument("project_id")
-        if name in ("resolve", "impact", "compile", "verify", "trace", "recover"):
+        if name in ("resolve", "impact", "compile", "verify", "trace", "recover", "quality"):
             action.add_argument("--version", default="latest", required=name == "recover")
-        if name in ("resolve", "diff", "impact", "compile", "verify"):
+        if name in ("resolve", "impact", "compile", "verify", "trace", "quality"):
+            action.add_argument("--as-of", help="UTC completed-snapshot cutoff")
+        if name in ("resolve", "diff", "impact", "compile", "verify", "quality"):
             action.add_argument("--path", action="append", default=[], dest="paths")
+        if name in ("compile", "quality"):
+            action.add_argument(
+                "--requirements", type=Path, help="JSON mapping of paths to data-use requirements"
+            )
         if name == "diff":
             action.add_argument("before")
             action.add_argument("after", nargs="?", default="latest")
@@ -146,6 +167,15 @@ def arguments(commands):
             action.add_argument("--transaction-time")
         if name == "compile":
             action.add_argument("--goal", required=True)
+            action.add_argument("--model-use", choices=("none", "extractive", "generative"), default="none")
+            action.add_argument(
+                "--query",
+                help="Discover relevant evidence before compiling; defaults to goal when no paths/base are supplied",
+            )
+            action.add_argument(
+                "--retrieval-mode", choices=("hybrid", "exact", "lexical", "semantic"), default="hybrid"
+            )
+            action.add_argument("--retrieval-limit", type=int, default=5)
             action.add_argument("--max-chars", type=int, default=12000)
             action.add_argument(
                 "--checks", type=Path, help="JSON array of output checks against object_id=result"
@@ -155,7 +185,7 @@ def arguments(commands):
             action.add_argument("--task-id")
             action.add_argument(
                 "--operation",
-                choices=("read", "write", "diff", "impact", "compile", "publish"),
+                choices=("read", "write", "search", "diff", "impact", "compile", "publish"),
                 default="read",
             )
             action.add_argument("--output-version")
@@ -215,7 +245,9 @@ def request(url, token, path, method="GET", body=None):
         data=json.dumps(body, ensure_ascii=False, allow_nan=False).encode() if body is not None else None,
     )
     try:
-        with urllib.request.build_opener(NoRedirect).open(call, timeout=30) as response:
+        with urllib.request.build_opener(NoRedirect).open(
+            call, timeout=300 if any(op in path for op in ("/search", "/compile")) else 30
+        ) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -238,24 +270,56 @@ def run(args):
             path += "?" + urllib.parse.urlencode({"release_id": args.release})
         return request(args.url, token, path, "POST")
     if args.action in ("ls", "read", "search"):
-        workspace = args.version is not None or args.target in request(args.url, token, "me").get(
-            "workspace_projects", []
+        workspace = (
+            args.version is not None
+            or args.as_of is not None
+            or args.target in request(args.url, token, "me").get("workspace_projects", [])
         )
         if workspace:
-            body = {"version": args.version or "latest"}
+            body = {"version": args.version or "latest", "as_of": args.as_of}
+            if args.action == "search" and args.requirements:
+                body["requirements"] = json.loads(args.requirements.read_text())
             if args.action == "read":
                 body.update(path=args.path, include_bytes=bool(args.output))
             if args.action == "search":
-                body["query"] = args.query
+                body.update(
+                    {
+                        key: getattr(args, key)
+                        for key in (
+                            "query",
+                            "mode",
+                            "limit",
+                            "paths",
+                            "tags",
+                            "min_similarity",
+                            "max_per_file",
+                            "rebuild",
+                        )
+                    }
+                )
             result = request(
                 args.url, token, "workspaces/" + quote(args.target) + "/" + args.action, "POST", body
             )
         else:
+            if args.action == "search" and args.requirements:
+                raise FilewiseError("Data-use requirements require a workspace credential")
             path = "sessions/" + quote(args.target)
             if args.action == "read":
                 path += "/read?" + urllib.parse.urlencode({"path": args.path})
             if args.action == "search":
-                path += "/search?" + urllib.parse.urlencode({"q": args.query})
+                path += "/search?" + urllib.parse.urlencode(
+                    {
+                        "q": args.query,
+                        "mode": args.mode,
+                        "limit": args.limit,
+                        "paths": args.paths,
+                        "tags": args.tags,
+                        "min_similarity": args.min_similarity,
+                        "max_per_file": args.max_per_file,
+                        "rebuild": str(args.rebuild).lower(),
+                    },
+                    doseq=True,
+                )
             result = request(args.url, token, path)
     else:
         path = "workspaces/" + quote(args.project_id) + "/" + args.action
@@ -270,6 +334,8 @@ def run(args):
             key: getattr(args, key)
             for key in (
                 "version",
+                "as_of",
+                "model_use",
                 "paths",
                 "before",
                 "after",
@@ -278,6 +344,9 @@ def run(args):
                 "valid_time",
                 "transaction_time",
                 "goal",
+                "query",
+                "retrieval_mode",
+                "retrieval_limit",
                 "max_chars",
                 "phase",
                 "task_id",
@@ -286,6 +355,8 @@ def run(args):
             )
             if hasattr(args, key) and getattr(args, key) is not None
         }
+        if args.action in ("compile", "quality") and args.requirements:
+            body["requirements"] = json.loads(args.requirements.read_text())
         if args.action == "compile" and args.checks:
             body["output_checks"] = json.loads(args.checks.read_text())
         if args.action == "verify":

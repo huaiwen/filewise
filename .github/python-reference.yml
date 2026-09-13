@@ -1,0 +1,29 @@
+# Archived pre-Rust workflow. Outside workflows/, so GitHub does not execute it.
+name: checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install uv==0.10.10
+      - run: uv sync --locked --all-extras --no-editable
+      - run: uv run --no-sync ruff check src tests examples
+      - run: uv run --no-sync ruff format --check src tests examples
+      - run: uv run --no-sync python -m unittest discover -s tests -v
+      - run: node --check src/filewise/static/console.js
+      - run: node --check src/filewise/static/workspace.js
+      - run: uv run --no-sync python examples/check_agent_boundary.py
+      - run: uv run --no-sync python examples/check_workspace.py
+      - run: uv run --no-sync python examples/check_retrieval.py
+      - run: uv run --no-sync python examples/check_data.py
+      - run: uv build
+      - run: uv run --no-sync filewise --db "$RUNNER_TEMP/demo.db" demo

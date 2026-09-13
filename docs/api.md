@@ -51,17 +51,22 @@ HTTP 201 表示成功创建/幂等提交来源、范围、修订或构建。**BL
 | `versions` | GET | 快照、写入说明/状态、命名提交与发布指针 |
 | `ls` | `{ "version":"latest" }` | 具体版本、文件 manifest、metadata、构建检查 |
 | `read` | `path`、可选 version/include_bytes | 文本、坐标、metadata、哈希与 receipt；仅 include_bytes=true 返回原件 Base64 |
-| `search` | query、可选 version/paths/limit | 服务端字面命中，最多100条，来源/坐标/哈希 |
+| `search` | query、version/paths/tags、mode、limit、min_similarity、max_per_file、rebuild | 精确/BM25/本地语义/RRF，最多100条，片段/来源/坐标/哈希/排名依据 |
+| `quality` | version/as_of/paths、requirements（路径→DataUse） | 固定版本/文件哈希、数据口径、质量规则、输入绑定、decision 与回执 |
 | `write` | WriteQuery，见下 | 新版本、saved/status、逐文件变化、verification、写入 metadata/receipt；不发布 |
 | `sync` | 无 | 捕获已注册目录中的外部保存；不修改原文件 |
 | `resolve` | version/paths；或 valid_time + 可选 transaction_time | 固定版本状态；时间模式为已审核修订双时间解析 |
 | `diff` | before、可选 after/paths | 服务端位置化与类型化差分、metadata 变化、统计和影响 |
 | `impact` | version、paths、base_version、direction | 前后依赖图上的传播路径与缺失边界 |
-| `compile` | goal、version/paths/base_version/direction、max_chars、output_checks | task_id、固定版本上下文、证据、回归与输出断言、工具及审批契约 |
+| `compile` | goal、version/paths/base_version/direction、max_chars、output_checks、query/retrieval_mode/retrieval_limit | task_id、检索 discovery、固定版本上下文、证据、回归与输出断言、工具及审批契约 |
 | `verify` | phase、version/task_id、operation、paths；postflight 可加 result/outputs/citations/output_version | decision、实际断言、阻断原因、receipt；production_authorized=false |
 | `evidence/{source_id}` | GET，可选 locator | 同项目当前可见的原始证据片段 |
 | `trace` | version | 版本基线、写入 provenance、相关审计（最多200条） |
 | `recover` | `{ "version":"CONCRETE_WRITE_VERSION" }` | 恢复此身份自己的中断工作写入，之后可用原幂等请求重试 |
+
+ls/read/search/quality/resolve/impact/compile/verify/trace 支持带时区 `as_of`：latest 选择截止时最后完成快照，显式版本/别名必须满足截止，未来或无完成回执的版本拒绝。历史任务只读。它不是供应商真实送达认证或行级 point-in-time join；与 resolve 的 valid_time/transaction_time 模式不可混用。recover 不接受 as_of。
+
+search/compile/quality 可带 `requirements: {"data.csv":{"expect":{"unit":"CNY"},"purpose":"panel_spending","require_quality":true}}`。compile 另接受 `model_use: none|extractive|generative`；任务固化 requirements/as_of，verify 重验并返回 data_guard。模型未来知识风险为 NEEDS_REVIEW，不被普通数据检查 PASS 覆盖。详见[数据契约](data.md)。
 
 WriteQuery 示例（changes 是局部操作集，不是完整上传集）：
 
@@ -81,7 +86,7 @@ WriteQuery 示例（changes 是局部操作集，不是完整上传集）：
 }
 ```
 
-每个 change 选择 text/base64/delete 之一，或仅 meta。meta 为 FileMetadata：summary、tags、entities、depends_on、facts、evidence、owner、authority、valid_from/valid_until。服务端绑定声明身份与内容 SHA，不能从输入注入；提供 meta 整份替换，省略时继承。事实、依赖和元数据进入不可变版本与差分。单 metadata 最大64,000字节，facts JSON 最多16,000字符。
+每个 change 选择 text/base64/delete 之一，或仅 meta。meta 为 FileMetadata：summary、tags、entities、depends_on、facts、evidence、owner、authority、valid_from/valid_until、data（DataContract）、processing（source/deterministic/model）、lineage（具体快照/path/role）。服务端绑定声明身份与内容 SHA，不能从输入注入；提供 meta 整份替换，省略时继承。事实、依赖和元数据进入不可变版本与差分。单 metadata 最大64,000字节，facts JSON 最多16,000字符。
 
 写入正文上限70 MiB（允许50 MiB文件集的 Base64 编码）；仍限制1,000文件、10 MiB/文件、50 MiB总原件。路径严格限制于注册项目关注范围。基线或幂等冲突409；既有文件外部漂移不覆盖；完成工作保存不触发生产指针变化。
 
@@ -110,7 +115,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | 方法与路径 | 内容 / 权限 |
 | --- | --- |
 | `GET /api/projects` | 可见项目列表；Agent 仅收到 id、name、active_release |
-| `POST /api/projects` | editor；ProjectSpec（id、name、dependencies、checks、excludes），不接受服务器 root |
+| `POST /api/projects` | editor；ProjectSpec（id、name、dependencies、checks、excludes、data_contracts），不接受服务器 root |
 | `GET /api/projects/{id}` | 操作员项目详情、契约、snapshots 和 commits（新到旧） |
 | `POST /api/projects/{id}/commits` | editor；正文为 release_id、message（1–500 字符）、expected_parent（首次为 null），记录所选文件集 |
 | `GET /api/projects/{id}/snapshots/{release}/compare?base_release=...` | 操作员；对比同项目两个不可变快照，省略 base_release 时对比空文件集 |
@@ -125,13 +130,13 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `POST /api/projects/{id}/sessions?release_id=...` | Agent 可用；省略 release_id 时固定当前发布，返回 session_id |
 | `GET /api/sessions/{session}` | Agent 可用；仅会话拥有者，返回固定版本文件集 |
 | `GET /api/sessions/{session}/read?path=...` | Agent 可用；每次重验资格，返回 text、fragments、原件 base64、receipt |
-| `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定版本片段的字面查询，最多 100 条结果，含来源哈希与位置 |
+| `GET /api/sessions/{session}/search?q=...` | Agent 可用；固定发布版本的共享排序检索，支持 mode/limit/paths/tags/min_similarity/max_per_file/rebuild 参数，仍执行会话和原件漂移检查 |
 
 提交返回 id、project_id、release_id、parent_id、message、author、created_at。`expected_parent` 必须显式传入，且等于当前最新提交的 id；历史变化或内容与父提交一致返回 409，空说明返回 422。提交不扫描目录、不批准、不激活、不写回原件。`compare` 重算 changes 和 impact；verification 仍是目标快照的构建检查，原始审核报告不变。操作员提交和 compare 入口不向 Agent 凭据开放；工作区 Agent 用 `/diff` 比较并用 `/versions` 读取提交历史。
 
 `restore` 返回新的快照，`report.restore_from` 是历史来源，`report.base_release` 是本次保存的实时原件基线，`report.changes` 是将要写入的完整文件集差异。候选保留现有审批/发布流程，可另行记录提交；201 不代表已恢复原件或业务检查通过。目标与原件相同时、目标撤销时或存在中断写回时返回 409；来源无权访问返回 403，上传项目返回 400。写回时再次核对来源与当前原件，后续外部修改不被覆盖。观察开关不限制人工恢复。
 
-项目版本的撤销与指针回退沿用 `POST /api/releases/{release}/revoke` 和 `/rollback`。回退不会覆盖真实目录，后续读取仍需通过哈希匹配。搜索是有界字面匹配，未接入向量检索、zvec-grep 或 TeamAI。
+项目版本的撤销与指针回退沿用 `POST /api/releases/{release}/revoke` 和 `/rollback`。回退不会覆盖真实目录，后续读取仍需通过哈希匹配。搜索使用有界精确/BM25和可选本地向量检索，未使用 zvec-grep 或 TeamAI。模式为 hybrid（默认）、exact、lexical、semantic；未配置模型的显式 semantic 返回503，hybrid 明确列出已启用通道；已配置模型故障时不隐式降级。范围最多20,000片段，超限413；问题为空白422。详见[检索契约](retrieval.md)。
 
 全套请求仍受入口认证和正文大小限制；重复上传路径、越界路径拒绝。所有原文件字节留在本地，Base64 只是响应编码。语义提示、报告校验和与读取回执均不是数字签名或自动业务正确性证明。
 

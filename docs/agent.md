@@ -69,7 +69,7 @@ filewise agent read inspection requirement.json
 }
 ```
 
-`meta` 支持 `summary / tags / entities / depends_on / facts / evidence / owner / authority / valid_from / valid_until`。`evidence` 项为 `source_id / locator / quote`，必须能在同项目可见来源中核对。时间须带时区，结束时间晚于开始时间。
+`meta` 支持 `summary / tags / entities / depends_on / facts / evidence / owner / authority / valid_from / valid_until / data / processing / lineage`。`evidence` 项为 `source_id / locator / quote`，必须能在同项目可见来源中核对。时间须带时区，结束时间晚于开始时间。
 
 提供 `meta` 是**整份替换该文件的声明**，不是浅合并；仅提供 `meta` 可创建 metadata-only 版本。未提供时沿用已有声明；文件内容变动后标记 `metadata_current=false`，旧 `facts` 不再提升为类型化事实字段，需重新声明。服务端记录 `declared_by` 与 `content_sha256`，调用者不能伪造这两个字段。声明是工作知识，不自动成为审核事实。
 
@@ -89,9 +89,22 @@ filewise agent search inspection "压力" --version HISTORICAL_VERSION
 
 `latest` 为默认工作版本；`published` 为当前发布指针；`HEAD` 为最新命名提交；还可指定 snapshot ID 或 commit ID。历史读取只读不可变来源，不要求当前原件等于历史字节，但每次应用当前权限和撤销状态。命名提交由操作员记录；每次 Agent 写入自身已经有说明、作者和版本。
 
-`diff` 由服务端直接返回增删改、JSON Pointer/单元格/行变化、metadata 前后值、类型化变化和影响路径；Agent 无须下载两份文件再比较。搜索是有界字面匹配。
+`diff` 由服务端直接返回增删改、JSON Pointer/单元格/行变化、metadata 前后值、类型化变化和影响路径；Agent 无须下载两份文件再比较。搜索支持精确、BM25、本地语义与混合排序，返回相关片段及命中依据；可用 `--mode`、`--path`、`--tag`、`--limit`、`--min-similarity` 控制。语义模型由服务端 `filewise retrieval setup` 显式配置，详见[相关内容检索](retrieval.md)。
 
 `read` 返回 text、fragments、metadata、SHA-256、版本及 receipt，默认不携带大段 Base64。`--output /tmp/copy.xlsx` 下载原字节并校验 SHA-256，拒绝覆盖已有文件。
+
+### 数据用途与历史可用时间
+
+```bash
+filewise agent quality inspection --path data.csv --requirements requirements.json
+filewise agent read inspection data.csv --as-of 2026-03-15T00:00:00Z
+filewise agent compile inspection --goal "核对历史样本" --path data.csv \
+  --as-of 2026-03-15T00:00:00Z --requirements requirements.json --model-use generative
+```
+
+`meta.data` 声明口径/用途及质量规则，操作员 `ProjectSpec.data_contracts` 固定必需规则。`requirements` 是路径到期望口径/用途的 JSON；search/compile/quality 接受，任务验证重验。`as_of` 以服务端完成回执选择当时已知整项目快照，支持 ls/read/search/quality/resolve/impact/compile/verify/trace；不会用供应商声明日期倒填，也不会恢复旧 ACL。待写回候选和无回执的旧历史不能充当已知时间证据。
+
+`processing` 和 `lineage` 固定已声明的数据/映射/代码/模型输入，输入当前撤销与权限递归生效。历史任务只读；涉及声明的模型产物、模型排名或 --model-use extractive/generative 时需复核模型未来知识风险。完整 JSON 与数值检查边界见[数据契约](data.md)。
 
 ## 4. resolve / impact / compile / verify / evidence / trace
 
@@ -114,7 +127,7 @@ filewise agent trace inspection --version VERSION
 | --- | --- |
 | `resolve` | 版本模式返回固定文件状态和类型化字段；指定 `--valid-time` 则走已审核修订的双时间解析，可加 `--transaction-time`，返回未知/冲突/撤销状态，不回溯历史权限 |
 | `impact` | 项目契约与版本化 `depends_on` 上的双向遍历，返回路径、缺失依赖和传播边界；有基线时联合前后图 |
-| `compile` | 按显式目标路径及影响集合取反向依赖闭包，固定版本、来源、坐标、哈希、回归任务、输出断言、工具契约、审批点和拒绝条件；不靠模型猜任务范围 |
+| `compile` | 有显式路径/基线时沿用依赖编译；否则用 goal（可用 --query 指定）发现相关文件，保存 discovery 并补齐依赖。--retrieval-mode / --retrieval-limit 控制召回；无命中产生阻断 frontier |
 | build verify | 真正运行文件/业务断言，另列生产运行时门禁；不把保存成功等同检查 PASS |
 | preflight verify | 重验任务身份、固定版本、证据、有效期、工具/路径权限、上下文完整性；写操作再查最新基线与原件漂移 |
 | postflight verify | 核对结果字段断言、引用坐标/原文、输出文件哈希；写操作须有该身份从输入基线完成的 Filewise 写入及匹配原件。没有可检查的输出返回 NEEDS_REVIEW |
@@ -130,7 +143,7 @@ filewise agent trace inspection --version VERSION
 
 `max_chars` 限制序列化 context，不包含任务契约与回归计划。截断会显式标记，preflight 不放行，需缩小路径或扩大预算（最大50,000字符）。任务对模型只是数据和可核验契约，不执行任意代码；`verify` 不把自由文本答案等同语义证明，也不执行外部系统动作。
 
-状态码：成功 JSON 到 stdout；HTTP/输入错误到 stderr、退出1；verify 的 BLOCKED/NEEDS_REVIEW 或 `require_pass` 拒绝保存时仍输出结构化结果、退出2。普通保存即使业务检查 BLOCKED 仍退出0，因为保存成功且未发布。`production_authorized` 始终为 false，生产门禁由独立发布流程承担。
+状态码：成功 JSON 到 stdout；HTTP/输入错误到 stderr、退出1；quality/verify 的 BLOCKED/NEEDS_REVIEW 或 `require_pass` 拒绝保存时仍输出结构化结果、退出2。普通保存即使业务检查 BLOCKED 仍退出0，因为保存成功且未发布。`production_authorized` 始终为 false，生产门禁由独立发布流程承担。
 
 ## 5. 持久化、冲突与恢复
 

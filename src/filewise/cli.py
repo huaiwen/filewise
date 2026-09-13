@@ -284,6 +284,19 @@ def main(argv=None):
     agent_auth.add_argument("project_id")
     agent_auth.add_argument("--tokens", type=Path, default=Path(".filewise/tokens.json"))
     agent_auth.add_argument("--read-only", action="store_true")
+    retrieval = commands.add_parser(
+        "retrieval", help="Configure local semantic retrieval; no document upload"
+    )
+    retrieval_actions = retrieval.add_subparsers(dest="action", required=True)
+    retrieval_setup = retrieval_actions.add_parser(
+        "setup", help="Download and pin public embedding weights, or reuse a local cache"
+    )
+    retrieval_setup.add_argument(
+        "--model", default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
+    retrieval_setup.add_argument("--cache-dir", type=Path)
+    retrieval_actions.add_parser("status")
+    retrieval_actions.add_parser("disable")
     serve = commands.add_parser("serve")
     serve.add_argument("--tokens", type=Path, default=os.environ.get("FILEWISE_TOKENS_FILE"))
     serve.add_argument("--host", default="127.0.0.1")
@@ -360,6 +373,19 @@ def main(argv=None):
                 result = middleware.recover("workspace", args.release_id, actor)
         elif args.command == "agent":
             result = agent.run(args)
+        elif args.command == "retrieval":
+            from .engine import require
+            from .retrieval import Retrieval
+
+            require(Actor(id=args.actor, roles=set(args.roles.split(","))), "editor")
+            retriever = Retrieval(Engine(args.db))
+            result = (
+                retriever.setup(args.model, args.cache_dir)
+                if args.action == "setup"
+                else retriever.disable()
+                if args.action == "disable"
+                else retriever.status()
+            )
         elif args.command == "showcase":
             import tempfile
 
