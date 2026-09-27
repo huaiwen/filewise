@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.86"
 description = "Native file versioning, evidence and guarded knowledge operations"
 publish = false
-include = ["Cargo.toml", "Cargo.lock", "rust/*.rs", "rust/ui/*", "README.md", "README.en.md", "docs/rust.md", "docs/folders.md"]
+include = ["Cargo.toml", "Cargo.lock", "rust/*.rs", "rust/ui/*", "README.md", "README.en.md", "/install.sh", "tests/install.sh", "docs/install.md", "docs/rust.md", "docs/folders.md"]
 
 [lib]
 path = "rust/lib.rs"

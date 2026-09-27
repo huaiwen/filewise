@@ -22,4 +22,5 @@ jobs:
           node-version: '22'
       - run: node rust/ui/i18n.test.cjs
       - run: cargo build --locked --release
+      - run: bash tests/install.sh "$PWD/target/release/filewise"
       - run: cargo package --locked

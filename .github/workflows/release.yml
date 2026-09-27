@@ -1,0 +1,103 @@
+name: Native binaries
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-binaries-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.86.0'
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify native target and release version
+        run: |
+          test "$(rustc -vV | awk '/^host:/ {print $2}')" = "$TARGET"
+          version=$(awk -F '"' '/^version = / {print $2; exit}' Cargo.toml)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --release
+      - run: node rust/ui/i18n.test.cjs
+      - name: Test installer with the real native binary and offline download fixtures
+        run: bash tests/install.sh "$PWD/target/release/filewise"
+      - name: Package binary and checksum
+        run: |
+          mkdir release
+          asset="filewise-$TARGET.tar.gz"
+          tar -czf "release/$asset" -C target/release filewise
+          cd release
+          shasum -a 256 "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filewise-${{ matrix.target }}
+          path: |
+            release/filewise-${{ matrix.target }}.tar.gz
+            release/filewise-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+  publish:
+    # Branch/manual builds produce artifacts only. A matching version tag opts into publication.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'huaiwen/filewise'
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: filewise-*
+          path: release
+          merge-multiple: true
+      - name: Publish only after all four native builds and installer tests pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$(find release -type f | wc -l)" -eq 8
+          (cd release && sha256sum --check ./*.sha256)
+          cp install.sh release/install.sh
+          (cd release && sha256sum install.sh > install.sh.sha256)
+          # Refuse to overwrite an existing release; a failed draft stays unpublished for inspection.
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --draft \
+            --title "Filewise $GITHUB_REF_NAME" --generate-notes \
+            --notes 'Development preview. Native binaries for macOS 13+ and Linux glibc 2.35+, Intel/AMD and ARM64. Download install.sh and run bash install.sh, or see docs/install.md in this tag. No Rust, Python or Node is needed. Stop existing instances before upgrading. macOS binaries are not Apple-notarized.'
+          flags=(--latest)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags=(--prerelease --latest=false); fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false "${flags[@]}"

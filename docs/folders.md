@@ -4,11 +4,10 @@
 
 ### Start once
 
-Build with Rust 1.86+ and a C toolchain, then run:
+[Install the prebuilt program](install.md) once, then run—no Rust or compiler needed:
 
 ```bash
-cargo build --locked --release
-./target/release/filewise start
+filewise start
 ```
 
 The command opens the **local browser workspace** and returns while the Rust background process keeps running. Closing the browser does not stop monitoring. No Python or Node runtime is required.
@@ -35,9 +34,9 @@ Node is needed only for this development check, not to run Filewise. The check c
 ### Lifecycle and private state
 
 ```bash
-./target/release/filewise status
-./target/release/filewise stop
-./target/release/filewise start --no-open
+filewise status
+filewise stop
+filewise start --no-open
 ```
 
 Default state: `~/Library/Application Support/Filewise/filewise.db` on macOS; `~/.local/share/filewise/filewise.db` on Linux. A custom global `--db` selects another instance. Unlike `start/status/stop/autostart`, the lower-level project/serve commands keep their existing `.filewise-rust/filewise.db` default: always pass the same explicit DB path when mixing them.
@@ -45,8 +44,8 @@ Default state: `~/Library/Application Support/Filewise/filewise.db` on macOS; `~
 macOS login startup is opt-in under **Startup settings**, or:
 
 ```bash
-./target/release/filewise autostart --enable
-./target/release/filewise autostart --disable
+filewise autostart --enable
+filewise autostart --disable
 ```
 
 Changes take effect at the next login. This writes only a per-user LaunchAgent, without administrator access; it is not a crash supervisor. Keep the executable and data directory at their configured paths. Linux login startup is not implemented. While the computer is off/asleep or the service is stopped, scanning pauses; restarting restores configured watches and detects offline changes.
@@ -67,7 +66,7 @@ The start URL contains a local **operator editing token**. Do not share it with 
 
 ## 中文
 
-运行 `filewise start`，在工作台添加文件夹并设置一次规则。之后放入文件即可，**关闭网页不影响后台监控**；服务重启后保留规则、历史，并检测停机期间的变化。
+先按[安装指南](install.md)安装预编译程序，无需编译；运行 `filewise start`，在工作台添加文件夹并设置一次规则。之后放入文件即可，**关闭网页不影响后台监控**；服务重启后保留规则、历史，并检测停机期间的变化。
 
 - **语言**：界面支持 English / 简体中文，可在页头和弹窗切换；默认跟随浏览器，其他语言回退英文。选择保存在浏览器，不改写文件内容或已填表单。日期、数字和复数通过 `Intl` 格式化。
 - **默认不改名**：保留原名仅写入元信息；建议模式先保存元信息，再等待确认；自动模式可直接修改路径。所有模式都不会自动审批或发布。

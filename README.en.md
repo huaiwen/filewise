@@ -20,14 +20,15 @@ Metadata is extracted from local text by default. You can optionally use a local
 
 ## Get started
 
-Building from source requires **Rust 1.86+** and a C toolchain. macOS is currently recommended for trying Filewise.
+**Install the prebuilt program—no Rust or compiler needed.** macOS is currently recommended for trying Filewise.
 
 ```bash
-git clone https://github.com/huaiwen/filewise.git
-cd filewise
-cargo build --locked --release
-./target/release/filewise start
+curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+filewise start
 ```
+
+The script detects macOS / Linux and your CPU architecture, verifies SHA-256, and installs into `~/.local/bin` without sudo. Already downloaded the source? Run `bash install.sh` in the repository; it still installs a prebuilt release. Only developers changing code need to [build from source](docs/install.md#developers-build-from-source).
 
 When the browser opens:
 
@@ -35,7 +36,7 @@ When the browser opens:
 2. Choose analysis fields and naming rules. Original names are kept by default.
 3. Drop in files and review processing activity and suggested names in the workspace.
 
-Monitoring continues after you close the browser. Run `./target/release/filewise stop` to stop the service.
+Monitoring continues after you close the browser. Run `filewise stop` to stop the service.
 
 ## Current scope
 
@@ -47,6 +48,7 @@ Built with **Rust + SQLite**, one native program provides the workspace, CLI and
 
 ## Learn more
 
+- [Installation and upgrades](docs/install.md): system requirements, pinned versions, manual downloads and developer builds, in English and Chinese.
 - [Folder workspace guide](docs/folders.md): monitoring, naming, language and background settings, in English and Chinese.
 - [CLI and Agent guide](docs/rust.md): project setup, file operations, retrieval, task checks and permissions; currently in Chinese.
 - [Historical prototype](README-python-reference.md): a retained reference implementation, separate from the Rust runtime.

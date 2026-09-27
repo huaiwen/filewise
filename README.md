@@ -20,14 +20,15 @@
 
 ## 开始使用
 
-从源码构建需要 **Rust 1.86+** 和 C 编译工具链。当前建议在 macOS 上试用。
+**普通用户安装编译好的程序即可，无需 Rust 或编译工具链。** 当前建议在 macOS 上试用。
 
 ```bash
-git clone https://github.com/huaiwen/filewise.git
-cd filewise
-cargo build --locked --release
-./target/release/filewise start
+curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+filewise start
 ```
+
+脚本自动识别 macOS / Linux 与 CPU 架构，校验 SHA-256 后安装到 `~/.local/bin`，不用 sudo。已下载源码？在仓库目录运行 `bash install.sh`，同样不需要编译。只有修改代码的开发者才需[从源码构建](docs/install.md#开发者从源码构建)。
 
 浏览器打开后：
 
@@ -35,7 +36,7 @@ cargo build --locked --release
 2. 选择分析字段和命名规则，默认保留原名。
 3. 放入文件，在工作台查看处理记录与改名建议。
 
-关闭网页后，后台仍会继续监控。停止服务可运行 `./target/release/filewise stop`。
+关闭网页后，后台仍会继续监控。停止服务可运行 `filewise stop`。
 
 ## 当前范围
 
@@ -47,6 +48,7 @@ Filewise 处于开发预览阶段，面向小型本地工作目录。正文处�
 
 ## 深入了解
 
+- [安装与升级](docs/install.md)：系统要求、指定版本、手动下载和开发者构建，中英双语。
 - [文件夹工作台](docs/folders.md)：监控、命名规则、语言和后台运行设置，中英双语。
 - [CLI 与 Agent 使用指南](docs/rust.md)：项目接入、读写、检索、任务检查和权限。
 - [历史原型](README-python-reference.md)：保留的参考实现，不参与当前 Rust 运行。

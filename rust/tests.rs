@@ -1026,6 +1026,7 @@ fn rust_guide_shell_and_json_examples_parse() {
         include_str!("../README.en.md"),
         include_str!("../docs/rust.md"),
         include_str!("../docs/folders.md"),
+        include_str!("../docs/install.md"),
     ] {
         let mut language = "";
         let mut body = String::new();

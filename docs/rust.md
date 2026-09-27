@@ -6,15 +6,14 @@
 
 Filewise 的 Rust 二进制同时提供操作员 CLI、HTTP 网关和 Agent 客户端。运行无需 Python；SQLite 随原生程序构建。
 
-需要 **Rust/Cargo 1.86+、C 编译工具链、macOS 或 Linux**。在包含 `Cargo.toml` 的目录执行：
+先按[安装指南](install.md)安装编译好的程序，无需 Rust/Cargo 或 C 编译器：
 
 ```bash
-cargo build --locked --release
-FW="$(pwd)/target/release/filewise"
+FW="$HOME/.local/bin/filewise"
 "$FW" --version
 ```
 
-预期输出 `filewise 0.2.0`。使用这个明确路径，避免误用之前 `.venv/bin/filewise` 中的原型程序。
+当前源码版本是 `filewise 0.2.0`。使用这个明确路径，避免误用之前 `.venv/bin/filewise` 中的原型程序；自定义安装位置时调整 `FW`。只有修改源码才需[开发者构建](install.md#开发者从源码构建)。
 
 ### 操作员终端：建立独立练习项目
 
@@ -47,10 +46,10 @@ printf '二进制：%s\n练习目录：%s\n' "$FW" "$DEMO"
 
 ### Agent 终端：只有 HTTP 凭据
 
-新开终端，进入同一个 Filewise 源码目录，填入刚才返回的项目令牌：
+新开终端，使用同一个已安装程序，填入刚才返回的项目令牌：
 
 ```bash
-FW="$(pwd)/target/release/filewise"
+FW="$HOME/.local/bin/filewise"
 export FILEWISE_URL=http://127.0.0.1:8000
 export FILEWISE_TOKEN='替换为项目专用令牌'
 
@@ -308,7 +307,7 @@ cargo test --locked
 
 文档解析增量的测试覆盖中英文 PDF、加密与混合文字/空白页、Office 段落/表格/备注与工作簿顺序、数值精度、公式/日期、恶意或超限 ZIP/XML、共享检索/差分/任务/引用撤销，以及自动改名/撤销与坏文件隔离。另有分配器限额测试。以实际执行日志和测试结果为准，不把历史版本的包验证套到新源码。
 
-源码包仅纳入 Cargo、Rust、嵌入式 UI 和相关说明，不包含旧 Python 或业务材料。独立包验证使用全新解包与构建目录。中英文 README/两份指南的 Shell 代码块检查语法；真实 CLI/HTTP 测试覆盖可运行链路，不把含占位符的命令算成已执行。
+源码包仅纳入 Cargo、Rust、嵌入式 UI、Bash 安装器及其检查和相关说明，不包含旧 Python 或业务材料。独立包验证使用全新解包与构建目录。中英文 README/三份指南的 Shell 代码块检查语法；真实 CLI/HTTP 测试覆盖可运行链路，不把含占位符的命令算成已执行。
 
 CLI/HTTP 测试清空子进程环境，不依赖 Python、虚拟环境或 PATH；macOS 还实际拒绝客户端读取原件、数据库和全部凭据，同时允许它通过 Rust 网关读文件。这验证新启动进程的文件隔离，不会自动约束其他已运行进程。
 
@@ -328,7 +327,7 @@ CLI/HTTP 测试清空子进程环境，不依赖 Python、虚拟环境或 PATH�
 - CLI 直接连接显式配置的网关，禁用环境代理和 HTTP 跳转；无效代理环境下的本地调用已测试。
 - 默认仅本机 HTTP。远程 Agent 客户端要求 HTTPS；服务端跨机部署由 TLS 反向代理和网络访问控制提供保护。
 
-GitHub CI 和 Dockerfile 已切换 Rust，Linux/远程 CI/Docker 尚未在本轮实际运行。原型的 87 项 Python 测试不是 Rust 功能等价证明。
+已推送的文档解析版本 `5b05286` 通过了 GitHub 的 Ubuntu / macOS [Rust CI](https://github.com/huaiwen/filewise/actions/runs/36332976029)。新增四平台二进制发布流程尚待远程执行；Docker 尚未验证。原型的 87 项 Python 测试不是 Rust 功能等价证明。
 
 ### 依赖下载失败
 
