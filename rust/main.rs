@@ -17,6 +17,9 @@ use std::{
     time::Duration,
 };
 
+#[global_allocator]
+static ALLOCATOR: filewise::worker::Allocator = filewise::worker::Allocator;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -40,6 +43,10 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    ExtractWorker {
+        format: String,
+    },
     AuthInit {
         #[arg(long, default_value = ".filewise-rust/tokens.json")]
         out: PathBuf,
@@ -655,6 +662,10 @@ fn agent(args: AgentArgs) -> Result<Value> {
     }
 }
 fn run(cli: Cli) -> Result<Value> {
+    if let Command::ExtractWorker { format } = cli.command {
+        return Ok(serde_json::to_value(filewise::worker::run(&format)?)?);
+    }
+    filewise::worker::executable(std::env::current_exe()?)?;
     if let Command::Agent(args) = cli.command {
         return agent(args);
     }

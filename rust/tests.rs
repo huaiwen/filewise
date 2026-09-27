@@ -1,3 +1,5 @@
+#[path = "document_tests.rs"]
+mod document_tests;
 #[path = "watch_tests.rs"]
 mod watch_tests;
 
@@ -1109,6 +1111,18 @@ fn actual_rust_cli_http_storage_roundtrip_without_python_environment() {
             "Rust CLI test",
         ],
     );
+    fs::write(
+        root.join("report.docx"),
+        document_tests::word("HTTP document"),
+    )
+    .unwrap();
+    fs::write(root.join("report.pdf"), document_tests::pdf(false, true)).unwrap();
+    fs::write(root.join("slides.pptx"), document_tests::slides()).unwrap();
+    fs::write(
+        root.join("data.xlsx"),
+        document_tests::sheet("9007199254740993", false),
+    )
+    .unwrap();
     let initial = run_cli(&db, &["project", "sync", "p"]);
     let old = initial["version"].as_str().unwrap();
     let auth = run_cli(
@@ -1183,6 +1197,26 @@ fn actual_rust_cli_http_storage_roundtrip_without_python_environment() {
         401
     );
     assert_eq!(agent_call(&["projects"], 0)[0]["id"], "p");
+    for path in ["report.docx", "report.pdf", "slides.pptx", "data.xlsx"] {
+        let read = agent_call(&["read", "p", path], 0);
+        assert_eq!(read["extraction"]["status"], "text", "{path}: {read}");
+        assert!(read["text"].as_str().unwrap().contains("机器故障"));
+    }
+    let exported = parent.join("exported.docx");
+    agent_call(
+        &[
+            "read",
+            "p",
+            "report.docx",
+            "--output",
+            exported.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read(exported).unwrap(),
+        fs::read(root.join("report.docx")).unwrap()
+    );
     let saved = agent_call(
         &[
             "write",
@@ -1210,9 +1244,12 @@ fn actual_rust_cli_http_storage_roundtrip_without_python_environment() {
         agent_call(&["read", "p", "requirement.json", "--version", old], 0)["text"],
         "{\"pressure_kpa\":100}"
     );
-    assert_eq!(
-        agent_call(&["search", "p", "pressure", "--mode", "lexical"], 0)["hits"][0]["path"],
-        "requirement.json"
+    assert!(
+        agent_call(&["search", "p", "pressure", "--mode", "lexical"], 0)["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["path"] == "requirement.json")
     );
     assert_eq!(
         agent_call(&["quality", "p", "--path", "requirement.json"], 2)["decision"],

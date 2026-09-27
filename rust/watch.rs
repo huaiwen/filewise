@@ -132,6 +132,8 @@ pub struct Analysis {
     pub fields: BTreeMap<String, Value>,
     #[serde(default)]
     pub coverage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<crate::documents::ExtractionInfo>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Job {
@@ -448,7 +450,27 @@ fn category(path: &str) -> String {
 }
 pub fn analyze(path: &str, bytes: &[u8], rules: &Rules) -> Result<Analysis> {
     rules.validate()?;
-    let fragments = files::fragments(path, bytes)?;
+    let extracted = files::extract(path, bytes)?;
+    if extracted.info.status == "failed" {
+        return Err(fail(
+            422,
+            format!(
+                "Document extraction failed: {}",
+                extracted
+                    .info
+                    .error
+                    .as_deref()
+                    .unwrap_or("No readable text pages")
+            ),
+        ));
+    }
+    if crate::documents::supported(path) && extracted.info.status == "no_text" {
+        return Err(fail(
+            422,
+            "Document has no extractable text; OCR may be required",
+        ));
+    }
+    let fragments = &extracted.fragments;
     let text = fragments
         .iter()
         .map(|f| f.text.as_str())
@@ -462,10 +484,13 @@ pub fn analyze(path: &str, bytes: &[u8], rules: &Rules) -> Result<Analysis> {
         title: base.into(),
         coverage: if text.is_empty() {
             "basic_only"
+        } else if extracted.info.status == "partial" {
+            "extractive_text_partial"
         } else {
             "extractive_text"
         }
         .into(),
+        extraction: Some(extracted.info.clone()),
         ..Default::default()
     };
     if !text.is_empty() {
@@ -479,6 +504,11 @@ pub fn analyze(path: &str, bytes: &[u8], rules: &Rules) -> Result<Analysis> {
             .and_then(|v| v.get("title").or_else(|| v.get("name")))
             .and_then(Value::as_str)
             .or_else(|| text.lines().find_map(|l| l.strip_prefix("# ")))
+            .or_else(|| {
+                matches!(category(path).as_str(), "pdf" | "docx" | "pptx")
+                    .then(|| text.lines().find(|l| !l.trim().is_empty()))
+                    .flatten()
+            })
             .map(|s| short(s.trim(), 100))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| base.into());
@@ -536,7 +566,11 @@ pub fn analyze(path: &str, bytes: &[u8], rules: &Rules) -> Result<Analysis> {
             let model: Analysis = serde_json::from_value(strict_json(content.as_bytes())?)?;
             bounded(&model.title, 1, 100, "model title")?;
             bounded(&model.summary, 0, 2000, "model summary")?;
-            if model.tags.len() > 10 || !model.fields.is_empty() || !model.coverage.is_empty() {
+            if model.tags.len() > 10
+                || !model.fields.is_empty()
+                || !model.coverage.is_empty()
+                || model.extraction.is_some()
+            {
                 return Err(fail(422, "Local model returned unsupported metadata"));
             }
             for tag in &model.tags {
@@ -551,6 +585,8 @@ pub fn analyze(path: &str, bytes: &[u8], rules: &Rules) -> Result<Analysis> {
             a.tags = model.tags;
             a.coverage = if text.chars().count() > 20000 {
                 "model_text_truncated"
+            } else if extracted.info.status == "partial" {
+                "model_text_partial"
             } else {
                 "model_text"
             }
@@ -1072,6 +1108,6 @@ pub fn overview(s: &Store, owner: &Actor) -> Result<Value> {
         )
         .optional()?;
     Ok(
-        json!({"folders":folders,"jobs":jobs,"heartbeat":heartbeat,"runtime":"rust","analysis_formats":["UTF-8 text","Markdown","JSON","CSV"],"other_formats":"basic metadata only; no Office/PDF/OCR extraction"}),
+        json!({"folders":folders,"jobs":jobs,"heartbeat":heartbeat,"runtime":"rust","analysis_formats":["UTF-8 text","Markdown","JSON","CSV","PDF text","DOCX","XLSX","PPTX"],"other_formats":"basic metadata only; no OCR or legacy DOC/XLS/PPT extraction"}),
     )
 }

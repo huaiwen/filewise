@@ -9,6 +9,7 @@ struct Folder {
 }
 impl Folder {
     fn new(rules: Value) -> Self {
+        filewise::worker::executable(PathBuf::from(env!("CARGO_BIN_EXE_filewise"))).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let parent = temp.path().canonicalize().unwrap();
         let root = parent.join("files");
@@ -451,8 +452,8 @@ fn watch_analysis_validation_i18n_and_no_implicit_cloud() {
         b"%PDF-1.4\n1 0 obj\n(This is container data, not extracted page text)",
         &watch::Rules::default(),
     )
-    .unwrap();
-    assert_eq!(a.coverage, "basic_only");
+    .unwrap_err();
+    assert_eq!(filewise::error_code(&a.message), Some("document_extract"));
     let messages = filewise::strict_json(include_bytes!("ui/strings.json")).unwrap();
     assert_eq!(
         messages["en"]
@@ -470,6 +471,56 @@ fn watch_analysis_validation_i18n_and_no_implicit_cloud() {
         filewise::error_code("Folder rules changed; reload before saving"),
         Some("rules_changed")
     );
+}
+#[test]
+fn watch_documents_parse_rename_undo_and_isolate_failures() {
+    let f = Folder::new(json!({"naming":"auto","template":"{title}"}));
+    let original = super::document_tests::word("Watched document");
+    fs::write(f.root.join("download.docx"), &original).unwrap();
+    fs::write(
+        f.root.join("scan.pdf"),
+        super::document_tests::pdf(true, false),
+    )
+    .unwrap();
+    fs::write(f.root.join("broken.pdf"), b"not a PDF").unwrap();
+    fs::write(
+        f.root.join("data.xlsx"),
+        super::document_tests::sheet("9007199254740993", false),
+    )
+    .unwrap();
+    f.drive();
+    let view = f.view();
+    let jobs = view["jobs"].as_array().unwrap();
+    let doc = jobs.iter().find(|j| j["path"] == "download.docx").unwrap();
+    assert_eq!(doc["status"], "done", "{view}");
+    assert_eq!(doc["analysis"]["extraction"]["status"], "text");
+    assert_eq!(doc["output_path"], "Watched document & 机器故障.docx");
+    assert_eq!(
+        fs::read(f.root.join(doc["output_path"].as_str().unwrap())).unwrap(),
+        original
+    );
+    assert_eq!(
+        jobs.iter().find(|j| j["path"] == "scan.pdf").unwrap()["error_code"],
+        "document_no_text"
+    );
+    assert_eq!(
+        jobs.iter().find(|j| j["path"] == "broken.pdf").unwrap()["error_code"],
+        "document_extract"
+    );
+    assert_eq!(
+        jobs.iter().find(|j| j["path"] == "data.xlsx").unwrap()["status"],
+        "done"
+    );
+    let mut store = Store::open(&f.db).unwrap();
+    watch::action(
+        &mut store,
+        doc["id"].as_str().unwrap(),
+        "undo",
+        &watch::actor(),
+    )
+    .unwrap();
+    assert_eq!(fs::read(f.root.join("download.docx")).unwrap(), original);
+    assert!(store.versions(&f.project, &watch::actor()).unwrap()["active_release"].is_null());
 }
 #[test]
 fn watch_background_cli_http_restart_and_local_boundary() {

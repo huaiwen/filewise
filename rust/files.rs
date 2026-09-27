@@ -324,8 +324,63 @@ pub fn scan(root: &Path, spec: &ProjectSpec) -> Result<BTreeMap<String, Vec<u8>>
     }
     Ok(files)
 }
+pub fn extract(path: &str, bytes: &[u8]) -> Result<crate::documents::Extraction> {
+    if crate::documents::supported(path) {
+        return Ok(crate::documents::extract(path, bytes));
+    }
+    let fragments = text_fragments(path, bytes)?;
+    let format = crate::documents::format(path);
+    let is_text = std::str::from_utf8(bytes).is_ok_and(|s| !s.contains('\0'))
+        && !bytes.starts_with(b"%PDF-")
+        && !bytes.starts_with(b"PK\x03\x04")
+        && !matches!(
+            format.as_str(),
+            "doc"
+                | "xls"
+                | "ppt"
+                | "odt"
+                | "ods"
+                | "odp"
+                | "epub"
+                | "zip"
+                | "gz"
+                | "7z"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "mp3"
+                | "mp4"
+                | "mov"
+                | "wav"
+        );
+    let mut result = crate::documents::Extraction::new(
+        &format,
+        if is_text {
+            if fragments.is_empty() {
+                "no_text"
+            } else {
+                "text"
+            }
+        } else {
+            "unsupported"
+        },
+    );
+    if is_text {
+        result.fragments = fragments;
+    }
+    result.info.fragment_count = result.fragments.len();
+    Ok(result)
+}
 pub fn fragments(path: &str, bytes: &[u8]) -> Result<Vec<Fragment>> {
-    // ASCII PDF/Office/container bytes are not extracted document text.
+    Ok(extract(path, bytes)?.fragments)
+}
+fn text_fragments(path: &str, bytes: &[u8]) -> Result<Vec<Fragment>> {
+    // Containers and mismatched extensions are never treated as raw UTF-8 text.
+    if bytes.starts_with(b"%PDF-") || bytes.starts_with(b"PK\x03\x04") {
+        return Ok(vec![]);
+    }
     let extension = Path::new(path)
         .extension()
         .and_then(|s| s.to_str())

@@ -26,6 +26,11 @@ assert.equal(en.t('confirm.rename',{path:'<script>not executable</script>'}).inc
 assert.equal(en.t('naming.hint').includes('{title}'),true);
 assert.equal(i18n.create({en:{key:'Fallback'},'zh-CN':{}},'zh-CN').t('key'),'Fallback');
 assert.equal(en.t('missing.key'),'missing.key');
+for(const key of ['jobs.partial','coverage.extractive_text_partial','coverage.model_text_partial','error.document_extract','error.document_no_text','extraction.formulas_not_evaluated']) {
+  assert.notEqual(en.t(key),key); assert.notEqual(zh.t(key),key); assert.notEqual(en.t(key),zh.t(key));
+}
+assert.equal(en.t('extraction.page_no_text',{page:'2'}),'Page 2: no text extracted; may need OCR.');
+assert.equal(zh.t('extraction.page_extraction_failed',{page:'2'}),'第 2 页：文本提取失败。');
 assert.equal(en.date('invalid'),'');
 assert.match(en.date('2026-09-10T12:00:00Z'),/2026/);
 assert.notEqual(en.date('2026-09-10T12:00:00Z'),zh.date('2026-09-10T12:00:00Z'));

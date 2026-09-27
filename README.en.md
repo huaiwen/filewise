@@ -1,50 +1,54 @@
-# Filewise · Rust
+# Filewise
 
 [简体中文](README.md) · **English**
 
-A local versioned file and knowledge layer for people and Agents. Filewise stores original bytes, metadata and history, and provides retrieval, diff, impact analysis and checkable task contracts. Working saves are separate from approval and publication.
+**A local file workspace with traceable history for people and AI agents.**
 
-**Rust + SQLite + Axum.** One native binary; no Python, Node or standalone database server is needed at runtime.
+Files change. The people and agents using them need to know which version they read, what changed, and where a reference came from. Filewise works with existing folders, keeping versions of files and metadata alongside tools for organization, retrieval and change analysis.
 
-## Folder workspace
+Use the browser workspace for everyday folder organization, or connect agents through the CLI and HTTP API. File history stays local, and default analysis needs no cloud service.
 
-Requires Rust 1.86+, a C toolchain, and macOS or Linux.
+## What you can do
+
+- **Keep folders organized.** Configure rules once to extract titles, text excerpts, tags and JSON fields in the background. Keep original names, confirm suggestions or rename automatically, with conflict checks and undo.
+- **Follow changes over time.** Preserve original content and metadata, read earlier versions, compare changes and follow declared dependencies to see which files are affected.
+- **Find material you can check.** Search English and Chinese text and get file paths, versions and content locations that lead back to the source.
+- **Give agents scoped file access.** Project-specific credentials limit access. Writes check their baseline version, and task context is bound to specific files and evidence.
+- **Check data before use.** Declare quality rules, data meaning and allowed uses for JSON/CSV/XLSX. Everyday saves remain separate from human approval and publication.
+
+Metadata is extracted from local text by default. You can optionally use a local Ollama model for titles, summaries and tags. The browser UI supports English and Simplified Chinese.
+
+## Get started
+
+Building from source requires **Rust 1.86+** and a C toolchain. macOS is currently recommended for trying Filewise.
 
 ```bash
+git clone https://github.com/huaiwen/filewise.git
+cd filewise
 cargo build --locked --release
 ./target/release/filewise start
 ```
 
-Add a folder in the browser UI, configure analysis and naming rules, then drop in files. The Rust background process detects stable changes and processes them without manual sync. **Closing the browser does not stop monitoring.**
+When the browser opens:
 
-- English / Simplified Chinese, browser-language detection and a persistent language selector.
-- Local extractive metadata for text, Markdown, JSON and CSV; explicitly configured local Ollama is optional.
-- Keep names, suggest names for confirmation, or rename automatically with collision protection and undo.
-- Persistent watches, pause/resume, retry and restart detection. Optional macOS login startup; Linux login startup is not yet implemented.
-- No automatic production approval or publication. No silent cloud analysis or Python fallback.
+1. Add a practice folder.
+2. Choose analysis fields and naming rules. Original names are kept by default.
+3. Drop in files and review processing activity and suggested names in the workspace.
 
-See **[Folder monitoring and safety limits](docs/folders.md)**. Office/PDF/OCR content extraction is not implemented. Folder renames preserve bytes, the inode, permissions and extended attributes; moves that cannot preserve them safely are refused. Start with a practice folder.
+Monitoring continues after you close the browser. Run `./target/release/filewise stop` to stop the service.
 
-```bash
-./target/release/filewise status
-./target/release/filewise stop
-```
+## Current scope
 
-## Agent and data operations
+Filewise is a development preview for small local workspaces. Content processing supports **text, Markdown, JSON, CSV, text-based PDF, DOCX, XLSX and PPTX**, with page, paragraph, worksheet-cell and slide locations. OCR, legacy DOC/XLS/PPT and vector semantic search are not yet implemented.
 
-The native gateway supports project-scoped credentials, guarded file/metadata writes, concrete-version CAS, idempotency, completed snapshot history and `as_of`, exact/FTS5 retrieval, dependency impact, task compilation and read-result verification, JSON/CSV data contracts and pinned lineage.
+Each folder is limited to 1,000 files and 50 MiB total, with a 10 MiB limit per file. Renames apply to files in the original folder.
 
-Use a **project-specific Agent token**, never the local workspace's operator token or raw SQLite/token files. The detailed [Rust operator and Agent guide](docs/rust.md) is currently in Chinese; API and CLI names are English.
+Built with **Rust + SQLite**, one native program provides the workspace, CLI and HTTP service. No Python, Node or standalone database server is needed at runtime.
 
-Native vector inference, Office/PDF extraction, named commits, reviewed historical restoration, upload projects, native Agent hooks, object bitemporality and write-postflight verification are not migrated. Unsupported operations fail explicitly. The old Python code is preserved as a reference, not a runtime backend.
+## Learn more
 
-## Development checks
+- [Folder workspace guide](docs/folders.md): monitoring, naming, language and background settings, in English and Chinese.
+- [CLI and Agent guide](docs/rust.md): project setup, file operations, retrieval, task checks and permissions; currently in Chinese.
+- [Historical prototype](README-python-reference.md): a retained reference implementation, separate from the Rust runtime.
 
-```bash
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-node rust/ui/i18n.test.cjs
-```
-
-Node is development-only for the internationalization check. Native tests use synthetic data and exercise actual background CLI/HTTP workflows. Packaging is allowlisted; no business documents, credentials or runtime state are included. Local validation does not imply that remote CI, Docker or Linux have been executed.
+Share use cases, problems and suggestions in [Issues](https://github.com/huaiwen/filewise/issues).

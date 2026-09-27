@@ -11,7 +11,7 @@ const t = (key, params) => i18n.t(key, params);
 const button = (text, action, cls = '') => { const b = node('button', text, cls); b.type = 'button'; b.onclick = () => action().catch(notice); return b; };
 const errorText = error => {
   const key = 'error.' + (error.code || '');
-  if (Object.hasOwn(messages.en, key)) return t(key) + (error.message && error.code.startsWith('model_') ? '\n' + t('error.details',{message:error.message}) : '');
+  if (Object.hasOwn(messages.en, key)) return t(key) + (error.message && (error.code.startsWith('model_') || error.code==='document_extract') ? '\n' + t('error.details',{message:error.message}) : '');
   return error.message || String(error) || t('error.operation');
 };
 function showError(selector, error) { errors.set(selector,error); $(selector).textContent=errorText(error); $(selector).hidden=false; }
@@ -55,6 +55,7 @@ function render() {
     if (j.status==='review') info.append(node('div',t('jobs.proposal',{path:j.proposed_path}),'job-sub'));
     if (j.error) info.append(node('div',errorText({message:j.error,code:j.error_code}),'job-sub'));
     if (j.analysis?.coverage==='basic_only') info.append(node('div',t('jobs.basic'),'job-sub'));
+    if (j.analysis?.extraction?.status==='partial') info.append(node('div',t('jobs.partial'),'job-sub'));
     actions.append(badge(j.status));
     if (j.path) actions.append(button(t('jobs.details'),async()=>detail(j)));
     if (j.status==='review') actions.append(button(t('jobs.approve'),()=>action(j,'approve'),'primary'));
@@ -108,6 +109,15 @@ function detail(j) {
   value('detail.hash',j.sha256); value('detail.source',j.version);
   if(j.analysis) {
     value('detail.name',j.analysis.title); value('detail.coverage',t('coverage.'+j.analysis.coverage));
+    if (j.analysis.extraction) {
+      const extraction=j.analysis.extraction;
+      value('detail.extraction',t('extraction.'+extraction.status));
+      if(extraction.notes.length) value('detail.extraction_notes',extraction.notes.map(note=>{
+        const page=/^page:(\d+):(no_text|extraction_failed)$/.exec(note);
+        if(page) return t('extraction.page_'+page[2],{page:i18n.number(+page[1])});
+        return Object.hasOwn(messages.en,'extraction.'+note)?t('extraction.'+note):note;
+      }).join('\n'));
+    }
     value('detail.summary',j.analysis.summary || t('detail.no_summary')); const tags=node('div',null,'tags'); tags.append(...j.analysis.tags.map(tag=>badge('',tag))); el.append(tags); el.append(node('pre',j.analysis_fields_json || JSON.stringify(j.analysis.fields,null,2)));
   }
   if(j.proposed_path) value('detail.proposal',j.proposed_path);

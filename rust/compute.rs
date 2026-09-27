@@ -111,10 +111,15 @@ fn table(path: &str, body: &[u8], contract: &DataContract) -> Result<(Rows, BTre
                     .collect(),
             );
         }
+    } else if path.to_ascii_lowercase().ends_with(".xlsx") {
+        if !contract.rows_pointer.is_empty() {
+            return Err(fail(422, "rows_pointer is only valid for JSON"));
+        }
+        (rows, columns) = crate::documents::table(&files::extract(path, body)?, contract.sheet)?;
     } else {
         return Err(fail(
             422,
-            "Rust data checks currently support JSON records and CSV; Office migration is pending",
+            "Data checks support JSON records, CSV and XLSX worksheets",
         ));
     }
     if columns.len() > 512 || columns.iter().any(|c| c.chars().count() > 300) {
@@ -520,6 +525,7 @@ pub fn search(store: &mut Store, project: &str, q: &Query, actor: &Actor) -> Res
         "CREATE VIRTUAL TABLE chunks USING fts5(content,tokenize='porter unicode61');",
     )?;
     let mut chunks = vec![];
+    let mut extraction = vec![];
     for path in paths {
         let file = &v.snapshot.files[&path];
         if !q
@@ -530,7 +536,10 @@ pub fn search(store: &mut Store, project: &str, q: &Query, actor: &Actor) -> Res
             continue;
         }
         let body = store.source(&file.source_id, project, actor)?.2;
-        let mut texts: Vec<_> = files::fragments(&path, &body)?
+        let extracted = files::extract(&path, &body)?;
+        extraction.push(json!({"path":path,"extraction":extracted.info}));
+        let mut texts: Vec<_> = extracted
+            .fragments
             .into_iter()
             .map(|f| (f.locator, f.text, "content"))
             .collect();
@@ -616,7 +625,7 @@ pub fn search(store: &mut Store, project: &str, q: &Query, actor: &Actor) -> Res
     let report = guard(store, project, &v, &found, q, actor, false)?;
     let receipt=store.receipt(project,actor,"file.search",json!({"version":v.id,"query":q,"hits":hits.iter().map(|h|&h["chunk_id"]).collect::<Vec<_>>()}))?;
     Ok(
-        json!({"version":v.id,"query":query,"hits":hits,"retrieval":{"channels":if q.mode=="exact"{vec!["exact"]}else if q.mode=="lexical"{vec!["bm25"]}else{vec!["exact","bm25"]},"semantic":"not_migrated","document_upload":false},"data_guard":report,"receipt":receipt}),
+        json!({"version":v.id,"query":query,"hits":hits,"extraction":extraction,"retrieval":{"channels":if q.mode=="exact"{vec!["exact"]}else if q.mode=="lexical"{vec!["bm25"]}else{vec!["exact","bm25"]},"semantic":"not_migrated","document_upload":false},"data_guard":report,"receipt":receipt}),
     )
 }
 fn changed_paths(a: &Version, b: &Version) -> Vec<String> {
@@ -671,24 +680,36 @@ pub fn diff(store: &Store, project: &str, q: &Query, actor: &Actor) -> Result<Va
         let x = a.snapshot.files.get(&path);
         let y = b.snapshot.files.get(&path);
         let mut loc = vec![];
+        let mut extraction = Value::Null;
         if let (Some(x), Some(y)) = (x, y) {
             let old = store.source(&x.source_id, project, actor)?.2;
             let new = store.source(&y.source_id, project, actor)?.2;
-            if path.ends_with(".json") {
+            if path.to_ascii_lowercase().ends_with(".json") {
                 if let (Ok(a), Ok(b)) = (crate::strict_json(&old), crate::strict_json(&new)) {
                     locations(&a, &b, "", &mut loc)
                 }
             } else {
-                let a = files::fragments(&path, &old)?;
-                let b = files::fragments(&path, &new)?;
-                for i in 0..a.len().max(b.len()) {
-                    if a.get(i).map(|f| &f.text) != b.get(i).map(|f| &f.text) {
-                        loc.push(json!({"locator":b.get(i).or_else(||a.get(i)).map(|f|&f.locator),"before":a.get(i).map(|f|&f.text),"after":b.get(i).map(|f|&f.text)}));
+                let before = files::extract(&path, &old)?;
+                let after = files::extract(&path, &new)?;
+                extraction = json!({"before":before.info,"after":after.info});
+                let a: BTreeMap<_, _> = before
+                    .fragments
+                    .into_iter()
+                    .map(|f| (f.locator, f.text))
+                    .collect();
+                let b: BTreeMap<_, _> = after
+                    .fragments
+                    .into_iter()
+                    .map(|f| (f.locator, f.text))
+                    .collect();
+                for locator in a.keys().chain(b.keys()).collect::<BTreeSet<_>>() {
+                    if a.get(locator) != b.get(locator) {
+                        loc.push(json!({"locator":locator,"before":a.get(locator),"after":b.get(locator)}));
                     }
                 }
             }
         }
-        changes.push(json!({"path":path,"kind":if x.is_none(){"added"}else if y.is_none(){"removed"}else{"modified"},"before_hash":x.map(|f|&f.sha256),"after_hash":y.map(|f|&f.sha256),"metadata_before":x.and_then(|f|f.metadata.as_ref()),"metadata_after":y.and_then(|f|f.metadata.as_ref()),"locations":loc}));
+        changes.push(json!({"path":path,"kind":if x.is_none(){"added"}else if y.is_none(){"removed"}else{"modified"},"before_hash":x.map(|f|&f.sha256),"after_hash":y.map(|f|&f.sha256),"metadata_before":x.and_then(|f|f.metadata.as_ref()),"metadata_after":y.and_then(|f|f.metadata.as_ref()),"locations":loc,"extraction":extraction}));
     }
     Ok(json!({"before":a.id,"after":b.id,"changes":changes,"summary":{"changed":changes.len()}}))
 }
@@ -788,11 +809,13 @@ pub fn compile(store: &mut Store, project: &str, q: &Query, actor: &Actor) -> Re
     for path in &paths {
         let f = &v.snapshot.files[path];
         let body = store.source(&f.source_id, project, actor)?.2;
-        let snippets = files::fragments(path, &body)?;
-        if snippets.is_empty() {
-            frontier.push(json!({"path":path,"reason":"no_extracted_text_evidence"}));
+        let extracted = files::extract(path, &body)?;
+        if extracted.fragments.is_empty() {
+            frontier.push(json!({"path":path,"reason":"no_extracted_text_evidence","extraction":extracted.info}));
+        } else if extracted.info.status != "text" {
+            frontier.push(json!({"path":path,"reason":"partial_extracted_text_evidence","extraction":extracted.info}));
         }
-        context.push(json!({"path":path,"source_id":f.source_id,"sha256":f.sha256,"metadata":f.metadata,"metadata_current":f.metadata_current,"fragments":snippets}));
+        context.push(json!({"path":path,"source_id":f.source_id,"sha256":f.sha256,"metadata":f.metadata,"metadata_current":f.metadata_current,"fragments":extracted.fragments,"extraction":extracted.info}));
         if serde_json::to_string(&context)?.chars().count() > q.max_chars {
             context.pop();
             truncated = true;

@@ -471,7 +471,11 @@ CREATE INDEX IF NOT EXISTS watch_queue ON watch_jobs(status);")?;
                 return Err(fail(422, "File exceeds the registered project boundary"));
             }
             files::relative(path)?;
-            files::fragments(path, body)?;
+            // Keep document originals even if parsing fails; text/data oracles are
+            // checked at their own read/quality/task boundary, not during capture.
+            if !crate::documents::supported(path) {
+                files::fragments(path, body)?;
+            }
             let sha = hash(body);
             let source_id = digest(&json!({"project":spec.id,"path":path,"sha256":sha}))?;
             let old = before.and_then(|b| b.snapshot.files.get(path));
@@ -1030,12 +1034,30 @@ CREATE INDEX IF NOT EXISTS watch_queue ON watch_jobs(status);")?;
         let (_, _, bytes) = self.source(&f.source_id, project, actor)?;
         let mut result = public_file(f);
         result["version"] = json!(v.id);
-        result["text"] = json!(
-            std::str::from_utf8(&bytes)
-                .ok()
-                .filter(|s| !s.contains('\0'))
-        );
-        result["fragments"] = json!(files::fragments(path, &bytes)?);
+        let extracted = files::extract(path, &bytes)?;
+        result["text"] = if crate::documents::supported(path) {
+            if extracted.fragments.is_empty() {
+                Value::Null
+            } else {
+                json!(
+                    extracted
+                        .fragments
+                        .iter()
+                        .map(|f| f.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            }
+        } else if matches!(extracted.info.status.as_str(), "text" | "no_text") {
+            json!(std::str::from_utf8(&bytes).ok())
+        } else {
+            Value::Null
+        };
+        result["extraction"] = json!(extracted.info);
+        result["fragments"] = json!(extracted.fragments);
+        if !extracted.sheets.is_empty() {
+            result["sheets"] = json!(extracted.sheets);
+        }
         result["temporal"] = self.temporal(&v, q.as_of.as_deref());
         if q.include_bytes {
             result["base64"] = json!(STANDARD.encode(bytes));

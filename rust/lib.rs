@@ -2,11 +2,13 @@
 
 pub mod compute;
 pub mod daemon;
+pub mod documents;
 pub mod files;
 pub mod http;
 pub mod model;
 pub mod store;
 pub mod watch;
+pub mod worker;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -100,6 +102,10 @@ pub fn error_code(message: &str) -> Option<&'static str> {
         ),
         ("Resume monitoring before retrying", "resume"),
         (
+            "Document has no extractable text; OCR may be required",
+            "document_no_text",
+        ),
+        (
             "Folder selection cancelled or unavailable; paste the path instead",
             "pick",
         ),
@@ -113,7 +119,9 @@ pub fn error_code(message: &str) -> Option<&'static str> {
         .find(|(text, _)| *text == message)
         .map(|(_, code)| *code)
         .or_else(|| {
-            if message.starts_with("Local model unavailable:") {
+            if message.starts_with("Document extraction failed:") {
+                Some("document_extract")
+            } else if message.starts_with("Local model unavailable:") {
                 Some("model_unavailable")
             } else if message.starts_with("JSON field is missing or format unsupported:") {
                 Some("json_field")
