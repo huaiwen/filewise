@@ -7,7 +7,7 @@ main() {
   if [[ ${1:-} == --help ]]; then
     printf '%s\n' 'Usage: bash install.sh [vVERSION]' \
       'Default: latest published release; FILEWISE_INSTALL_DIR defaults to ~/.local/bin.' \
-      'Requires Bash, curl, tar, and sha256sum or shasum. No Rust or sudo.'
+      'Requires Bash, curl, tar, gzip, and sha256sum or shasum. No Rust or sudo.'
     return
   fi
   [[ $# -le 1 ]] || die 'Usage: bash install.sh [vVERSION]'
@@ -16,7 +16,7 @@ main() {
   local repo=https://github.com/huaiwen/filewise
   local -a hash_command
   case "$install_dir" in /*) ;; *) die 'FILEWISE_INSTALL_DIR must be an absolute path.' ;; esac
-  for tool in curl tar mktemp uname; do
+  for tool in curl tar gzip mktemp uname; do
     command -v "$tool" >/dev/null || die "Missing required command: $tool"
   done
   if command -v sha256sum >/dev/null; then

@@ -12,7 +12,7 @@ export PATH="$HOME/.local/bin:$PATH"
 filewise start
 ```
 
-安装需要 Bash、curl、tar，以及 `sha256sum` 或 `shasum`；macOS 通常已自带，精简 Linux 环境可能需补齐。默认安装位置是 `~/.local/bin/filewise`，不使用 sudo，不改 shell 配置、不启动服务或登录项。上面的 PATH 设置仅影响当前终端；要长期使用，可自行把该 `export` 行加入自己的 shell 配置，或直接运行 `~/.local/bin/filewise start`。
+安装需要 Bash、curl、tar、gzip，以及 `sha256sum` 或 `shasum`；macOS 通常已自带，精简 Linux 环境可能需补齐。默认安装位置是 `~/.local/bin/filewise`，不使用 sudo，不改 shell 配置、不启动服务或登录项。上面的 PATH 设置仅影响当前终端；要长期使用，可自行把该 `export` 行加入自己的 shell 配置，或直接运行 `~/.local/bin/filewise start`。
 
 已下载源码时，在仓库根目录运行 `bash install.sh` 即可。它安装**最新已发布版本**，不构建当前分支，也不包含尚未发布的改动。
 
@@ -86,7 +86,7 @@ export PATH="$HOME/.local/bin:$PATH"
 filewise start
 ```
 
-Requires Bash, curl, tar and either sha256sum or shasum. Add the PATH line to your own shell configuration if desired, or use `~/.local/bin/filewise` directly. If you already cloned the repository, run `bash install.sh`: it installs the latest published binary, not your checkout's uncommitted/unreleased changes.
+Requires Bash, curl, tar, gzip and either sha256sum or shasum. Add the PATH line to your own shell configuration if desired, or use `~/.local/bin/filewise` directly. If you already cloned the repository, run `bash install.sh`: it installs the latest published binary, not your checkout's uncommitted/unreleased changes.
 
 Build targets: macOS 13+ on Apple Silicon/Intel, and Linux glibc 2.35+ on x86-64/ARM64 (Ubuntu 22.04 build baseline). See the table above for asset names; available platforms are the assets actually attached to each release. No native Windows or Alpine/musl package. macOS binaries are not Apple Developer ID signed/notarized. If macOS blocks execution, verify the source/checksum and follow System Settings → Privacy & Security; the installer does not disable Gatekeeper or remove quarantine attributes.
 

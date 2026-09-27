@@ -141,14 +141,20 @@ cmp "$work/before" "$HOME/.local/bin/filewise"
 bash "$repo/install.sh" --help > "$work/output"
 # Exercise shasum on Linux too, without depending on whether sha256sum is installed.
 mkdir "$work/fallback"
-for tool in bash tar mktemp mkdir rm mv chmod cp shasum; do
+for tool in bash tar gzip mktemp mkdir rm mv chmod cp shasum; do
   ln -s "$(command -v "$tool")" "$work/fallback/$tool"
 done
 ln -s "$work/stubs/curl" "$work/fallback/curl"
 ln -s "$work/stubs/uname" "$work/fallback/uname"
 PATH="$work/fallback" bash "$repo/install.sh" "v$version" > "$work/output"
 cmp "$work/before" "$HOME/.local/bin/filewise"
+# GNU tar invokes gzip through PATH; fail before downloading when it is missing.
+rm "$work/fallback/gzip"
 cp "$FW_TEST_CALLS" "$work/calls-before"
+if PATH="$work/fallback" bash "$repo/install.sh" "v$version" > "$work/output" 2>&1; then exit 1; fi
+grep -F 'Missing required command: gzip' "$work/output" >/dev/null
+cmp "$work/calls-before" "$FW_TEST_CALLS"
+cmp "$work/before" "$HOME/.local/bin/filewise"
 # Download interrupted inside main(): no network/filesystem install work should execute.
 head -n 35 "$repo/install.sh" > "$work/truncated.sh"
 if bash "$work/truncated.sh" > "$work/output" 2>&1; then exit 1; fi
