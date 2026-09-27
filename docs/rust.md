@@ -327,7 +327,7 @@ CLI/HTTP 测试清空子进程环境，不依赖 Python、虚拟环境或 PATH�
 - CLI 直接连接显式配置的网关，禁用环境代理和 HTTP 跳转；无效代理环境下的本地调用已测试。
 - 默认仅本机 HTTP。远程 Agent 客户端要求 HTTPS；服务端跨机部署由 TLS 反向代理和网络访问控制提供保护。
 
-已推送的文档解析版本 `5b05286` 通过了 GitHub 的 Ubuntu / macOS [Rust CI](https://github.com/huaiwen/filewise/actions/runs/36332976029)。新增四平台二进制发布流程尚待远程执行；Docker 尚未验证。原型的 87 项 Python 测试不是 Rust 功能等价证明。
+`v0.2.0` 的 macOS / Linux、ARM64 / x86_64 四个平台均通过了[原生测试和安装检查](https://github.com/huaiwen/filewise/actions/runs/36336439375)，安装包已在 [Releases](https://github.com/huaiwen/filewise/releases/tag/v0.2.0) 发布。另在 macOS ARM64 清空环境后实测了公开下载安装、服务启停和文档解析子进程。Docker 尚未验证。原型的 87 项 Python 测试不是 Rust 功能等价证明。
 
 ### 依赖下载失败
 
