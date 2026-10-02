@@ -1,0 +1,15 @@
+{
+  "name": "filewise",
+  "version": "0.3.0-dev",
+  "description": "Install the native Filewise workspace and skills for Codex, Claude Code and Cursor.",
+  "bin": { "filewise": "npm/cli.mjs" },
+  "engines": { "node": ">=22" },
+  "files": ["npm/cli.mjs", "install.sh", "skills/filewise/"],
+  "repository": { "type": "git", "url": "git+https://github.com/huaiwen/filewise.git" },
+  "bugs": { "url": "https://github.com/huaiwen/filewise/issues" },
+  "scripts": {
+    "test": "node internal/workspace/ui/i18n.test.cjs && node --test tests/npm.test.mjs tests/site.test.mjs tests/skill.test.mjs",
+    "site": "node site/serve.mjs"
+  },
+  "filewise": { "nativeVersion": "v0.3.0-dev" }
+}

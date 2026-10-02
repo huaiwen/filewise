@@ -2,104 +2,95 @@
 
 ## 中文
 
-### 普通用户：安装后直接运行
+### 当前 Go 源码版
 
-无需克隆仓库、Rust、Python、Node 或 C 编译器。安装器只下载 GitHub Release 中的原生程序，**不会在本机编译**。
+当前版本 **`0.3.0-dev (Go)` 尚未公开发行**。在当前源码目录构建并启动：
 
 ```bash
-curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
+make build
+./build/filewise --version
+./build/filewise start
+```
+
+需要 Go 1.27+；普通构建使用 `CGO_ENABLED=0`，不需要 Rust、Python、Node 或 C 编译器。产物为 `build/filewise`，不会覆盖用户已安装程序。`make check` 的 race 检查另需 C 编译工具链。
+
+默认 Go 状态独立保存于 macOS 的 `~/Library/Application Support/Filewise-Go/` 或 Linux 的 `~/.local/share/filewise-go/`。原有数据库不转换、不接管；首次接入从当前观察状态开始记录。底层项目命令默认 `.filewise-go/filewise.db`；混用命令时明确传入同一个 `--db`。
+
+### Go 二进制发行后
+
+从对应的 [Release](https://github.com/huaiwen/filewise/releases) 下载并检查 `install.sh`，指定实际已发布的 Go 标签：
+
+```bash
+# 将提示输入替换为 Release 中确实存在的 Go 标签。
+printf 'Published Go tag: '
+read -r GO_TAG
+bash install.sh "$GO_TAG"
 export PATH="$HOME/.local/bin:$PATH"
 filewise start
 ```
 
-安装需要 Bash、curl、tar、gzip，以及 `sha256sum` 或 `shasum`；macOS 通常已自带，精简 Linux 环境可能需补齐。默认安装位置是 `~/.local/bin/filewise`，不使用 sudo，不改 shell 配置、不启动服务或登录项。上面的 PATH 设置仅影响当前终端；要长期使用，可自行把该 `export` 行加入自己的 shell 配置，或直接运行 `~/.local/bin/filewise start`。
+本地安装器默认选择 GitHub latest，但会拒绝 `v0.2.x` 等历史版本，不会退回 Rust 或现场编译。当前没有 Go Release 时，使用源码构建。历史 [v0.2.0](https://github.com/huaiwen/filewise/releases/tag/v0.2.0) 的资产和安装脚本保持原样，不是 Go 版本。
 
-已下载源码时，在仓库根目录运行 `bash install.sh` 即可。它安装**最新已发布版本**，不构建当前分支，也不包含尚未发布的改动。
+安装器需要 Bash、curl、tar、gzip，以及 `sha256sum` 或 `shasum`。默认目录 `~/.local/bin`；用绝对路径 `FILEWISE_INSTALL_DIR` 自定义。流程固定版本、校验 SHA-256、只提取单个预期文件、确认版本带 `(Go)`，最后同目录替换。失败保留已有程序，拒绝符号链接目标；不使用 sudo，不改配置，不启动服务或登录项。
 
-发布流程提供以下构建目标；实际可下载的平台以对应 Release 的附件为准：
+| 目标 | Go 发行包名 |
+| --- | --- |
+| macOS Apple Silicon | `filewise-darwin-arm64.tar.gz` |
+| macOS Intel | `filewise-darwin-amd64.tar.gz` |
+| Linux ARM64 | `filewise-linux-arm64.tar.gz` |
+| Linux x86-64 | `filewise-linux-amd64.tar.gz` |
 
-| 系统 / 架构 | 安装包 | 构建基线 |
-| --- | --- | --- |
-| macOS Apple Silicon | `filewise-aarch64-apple-darwin.tar.gz` | macOS 13+ |
-| macOS Intel | `filewise-x86_64-apple-darwin.tar.gz` | macOS 13+ |
-| Linux Intel/AMD 64 位 | `filewise-x86_64-unknown-linux-gnu.tar.gz` | glibc 2.35+（Ubuntu 22.04 构建） |
-| Linux ARM64 | `filewise-aarch64-unknown-linux-gnu.tar.gz` | glibc 2.35+（Ubuntu 22.04 构建） |
+四目标均关闭 CGO；交叉构建不等于已在对应系统运行。Windows 未实现，最低系统版本、Alpine/musl 和其他设备尚需实机验证。macOS 程序尚未 Apple 签名/公证；安装器不会关闭系统保护。
 
-Windows 和 Alpine/musl 暂无原生安装包。macOS 包尚未使用 Apple 开发者签名与公证；若被系统拦截，先核对下载来源和校验值，再按“系统设置 → 隐私与安全性”的提示允许该程序。安装器不关闭 Gatekeeper，也不删除隔离标记。
-
-### 指定版本、手动下载
-
-从 [Releases](https://github.com/huaiwen/filewise/releases) 下载该版 `install.sh`，可先查看脚本，再运行：
-
-```bash
-# 把版本号替换为 Releases 中实际存在的版本；也支持显式指定预发布版本。
-bash install.sh v0.2.0
-# 可选：改变安装位置，必须是绝对路径。
-FILEWISE_INSTALL_DIR="$HOME/bin" bash install.sh v0.2.0
-```
-
-不带版本号时使用 GitHub 的 latest Release（不包含预发布）。安装器先固定版本，再下载对应架构的压缩包及 `.sha256`；校验、解包和版本检查都通过后才替换旧程序。下载失败、校验不符或系统不支持时保留原安装。已有目标为符号链接时拒绝覆盖，避免破坏包管理器维护的文件。
-
-也可以手动下载平台 `.tar.gz` 和同名 `.tar.gz.sha256`，在下载目录执行 `shasum -a 256 -c 包名.tar.gz.sha256`（Linux 可用 `sha256sum -c`），通过后解压并运行 `./filewise start`。SHA-256 检查文件完整性；校验文件来自同一 GitHub Release，并非独立签名。
+手动下载时同时获取压缩包及 `.sha256`，运行 `shasum -a 256 -c ARCHIVE.sha256`（或 `sha256sum -c`）后解压。校验文件来自同一 Release，保护完整性，不是独立签名。第三方许可已嵌入二进制，用 `filewise --licenses` 查看。
 
 ### 升级与卸载
 
-升级前先停止服务，再重跑安装器；配置、文件历史和原始文件不受安装器影响。使用自定义 `--db` 的实例也要分别停止，避免旧服务与新解析子进程混用。
+替换程序前停止**所有**实例，包括自定义 `--db` 的实例，避免旧服务与新解析子进程混用。先备份各自的私有状态目录和原文件目录，再替换程序。Go 不会升级旧版状态。
 
 ```bash
 filewise stop
-curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
+# 安装已发布的 Go 版本，或替换为已验证的本地 Go 构建。
 filewise start
 ```
 
-卸载时先停止各实例；启用了 macOS 登录启动的实例，先对同一 `--db` 执行 `filewise autostart --disable`。然后删除所安装的 `filewise` 可执行文件即可。数据库和历史不会被删除。
+卸载时停止实例，对启用登录启动的同一数据库执行 `filewise autostart --disable`，再删除可执行文件。数据库、历史和原件由用户保留。
 
 ### 开发者：从源码构建
 
-只有修改代码、测试未发布改动时才需要 Rust 1.86+ 和 C 编译工具链：
-
 ```bash
-git clone https://github.com/huaiwen/filewise.git
-cd filewise
-cargo test --locked
-cargo build --locked --release
-./target/release/filewise start
+make check
+make build
+FILEWISE_TEST_BINARY="$PWD/build/filewise" npm test
+bash tests/install.sh "$PWD/build/filewise"
 ```
 
-安装器的离线检查：`bash tests/install.sh`；检查真实二进制的安装：`bash tests/install.sh "$PWD/target/release/filewise"`。测试使用临时 HOME、安装目录和模拟下载，不访问真实用户配置。CI 在每次 push / PR 执行安装检查。
+npm/网站检查需要 Node.js 22+；安装检查使用临时 HOME、模拟网络和真实本地 Go 二进制，不会安装到用户目录。Dockerfile 使用 Go 构建和非 root 运行，凭据作为私有只读挂载提供；容器不是自动的 Agent 授权方案。
 
-### 维护者：自动构建与发布
+### 维护者：构建与发布
 
-`.github/workflows/release.yml` 在四种原生 runner 上测试、构建并打包，不在用户电脑上编译。手动运行 **Native binaries** 工作流只生成 Actions 附件；推送与 `Cargo.toml` 版本一致的 `vX.Y.Z` 标签才会发布 GitHub Release。所有平台测试通过后上传四个压缩包、四个校验文件、安装脚本及其校验文件。预发布标签标为 prerelease，不进入 latest。
+`.github/workflows/release.yml` 配置 macOS/Linux × ARM64/x86-64 四种原生 runner。手动运行只生成 Actions 附件；经单独授权后推送与 Go `--version` 及 `package.json.filewise.nativeVersion` 一致的新标签，才发布四个压缩包/校验文件及安装脚本/校验文件。预发布标签不进入 latest，已有 Release 不覆盖，失败草稿保留检查。
 
-发布前核对版本号与测试结果，再推送对应标签。现有 Release 不被覆盖；上传失败的草稿留待维护者检查。
+源码推送触发 [Go checks](https://github.com/huaiwen/filewise/actions/workflows/ci.yml)，不发布 Go/npm 包或部署网站。验证结果对应具体提交；历史 Rust CI 不能代替 Go 验证。
 
 ## English
 
-### Users: install, then run
+### Current Go source build
 
-No clone, Rust, Python, Node or C compiler is needed. The installer downloads a native GitHub Release, verifies SHA-256, checks the executable version, then installs to `~/.local/bin/filewise` without sudo. It never compiles, edits shell profiles, starts services or enables login startup.
+**`0.3.0-dev (Go)` is not publicly released.** From the current checkout, run `make build`, then `./build/filewise start`. Go 1.27+ is required; normal builds disable CGO and require no Rust, Python, Node or C compiler. Race-detector tests additionally need a C toolchain. The build stays under `build/` and does not replace an installed executable.
 
-```bash
-curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-filewise start
-```
+Go uses separate state under `~/Library/Application Support/Filewise-Go/` on macOS or `~/.local/share/filewise-go/` on Linux. Lower-level project commands default to `.filewise-go/filewise.db`; pass the same explicit `--db` when combining interfaces. Legacy databases are not imported or rewritten.
 
-Requires Bash, curl, tar, gzip and either sha256sum or shasum. Add the PATH line to your own shell configuration if desired, or use `~/.local/bin/filewise` directly. If you already cloned the repository, run `bash install.sh`: it installs the latest published binary, not your checkout's uncommitted/unreleased changes.
+### Published Go binaries
 
-Build targets: macOS 13+ on Apple Silicon/Intel, and Linux glibc 2.35+ on x86-64/ARM64 (Ubuntu 22.04 build baseline). See the table above for asset names; available platforms are the assets actually attached to each release. No native Windows or Alpine/musl package. macOS binaries are not Apple Developer ID signed/notarized. If macOS blocks execution, verify the source/checksum and follow System Settings → Privacy & Security; the installer does not disable Gatekeeper or remove quarantine attributes.
+After a Go release exists, inspect its installer and run `bash install.sh PUBLISHED_GO_TAG`. This branch's installer rejects historical Rust releases and requires a matching `(Go)` version response. It never compiles or silently falls back to v0.2.0. The immutable historical release remains available separately.
 
-### Versions and upgrades
+Requires Bash, curl, tar, gzip and a SHA-256 tool. Default destination: `~/.local/bin`; `FILEWISE_INSTALL_DIR` must be absolute. Checksums, exact archive membership and runtime identity are checked before replacement. No sudo, profile changes, service startup or login enrollment. `filewise --licenses` prints embedded third-party notices. Checksum files are not independent signatures.
 
-Download and inspect `install.sh` from [Releases](https://github.com/huaiwen/filewise/releases), then use `bash install.sh v0.2.0` for a specific published version (including prereleases). Set `FILEWISE_INSTALL_DIR` to an absolute path for a different destination. With no version argument, GitHub's latest non-prerelease is selected once before downloading. A failed download/check leaves the existing binary intact; symlink destinations are refused.
-
-For manual installation, download the platform archive and its `.sha256` file, verify with `shasum -a 256 -c ARCHIVE.sha256` (or `sha256sum -c`), extract, and run `./filewise start`. Checksums protect integrity, not against compromise of the publishing account; they are not independent signatures.
-
-**Stop all instances before upgrading**, rerun the installer, then restart. Custom `--db` instances need their own stop/start. Data and history remain untouched. To uninstall, stop all instances, disable any configured macOS login startup with `autostart --disable` for each relevant DB, then remove only the executable.
+Targets and asset names are in the table above. Go binaries are CGO-disabled. Cross-build success does not certify execution on another OS; minimum-OS, musl and physical-device testing remain separate. macOS binaries are not Apple-notarized.
 
 ### Developers: build from source
 
-Only source changes require Rust 1.86+ and a C toolchain. Clone the repo, run `cargo test --locked`, `cargo build --locked --release`, then `./target/release/filewise start`. Offline installer checks: `bash tests/install.sh`; add the absolute native binary path as the argument to test installing a real build.
+Run the development commands above; Node.js 22+ is used only for distribution/UI checks. The Docker configuration builds Go and runs non-root. Stop every instance before replacing its executable, back up state and originals, then restart. To uninstall, stop instances, disable any opted-in login item for the same DB, and remove only the executable.
 
-**Maintainers:** the Native binaries workflow builds/tests four native targets. Manual branch runs upload Actions artifacts only; a version tag matching Cargo.toml publishes a Release after every target passes. Prerelease tags stay out of latest; existing releases are not overwritten. Verify the version and test results before pushing a release tag; failed uploads leave a draft for inspection.
+Source pushes trigger Go checks, not package publication or site deployment. Manual release-workflow runs produce artifacts only; an authorized matching new tag can publish after all four native gates pass. Existing tags and release assets remain immutable. Check the Go CI run for the corresponding commit rather than using historical Rust results.

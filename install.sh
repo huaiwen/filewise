@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Download a published native binary; never compile or modify shell/startup settings.
+# Download a published Go binary; never compile or modify shell/startup settings.
 # Keep execution until the final line so a truncated curl | bash cannot partly install.
 set -euo pipefail
 
 main() {
   if [[ ${1:-} == --help ]]; then
     printf '%s\n' 'Usage: bash install.sh [vVERSION]' \
-      'Default: latest published release; FILEWISE_INSTALL_DIR defaults to ~/.local/bin.' \
-      'Requires Bash, curl, tar, gzip, and sha256sum or shasum. No Rust or sudo.'
+      'Default: latest published Go release; refuses historical Rust releases.' \
+      'FILEWISE_INSTALL_DIR defaults to ~/.local/bin.' \
+      'Requires Bash, curl, tar, gzip, and sha256sum or shasum. No compiler or sudo.'
     return
   fi
   [[ $# -le 1 ]] || die 'Usage: bash install.sh [vVERSION]'
@@ -27,10 +28,10 @@ main() {
     die 'Install sha256sum or shasum first.'
   fi
   case "$(uname -s):$(uname -m)" in
-    Darwin:arm64|Darwin:aarch64) target=aarch64-apple-darwin ;;
-    Darwin:x86_64) target=x86_64-apple-darwin ;;
-    Linux:x86_64|Linux:amd64) target=x86_64-unknown-linux-gnu ;;
-    Linux:aarch64|Linux:arm64) target=aarch64-unknown-linux-gnu ;;
+    Darwin:arm64|Darwin:aarch64) target=darwin-arm64 ;;
+    Darwin:x86_64) target=darwin-amd64 ;;
+    Linux:x86_64|Linux:amd64) target=linux-amd64 ;;
+    Linux:aarch64|Linux:arm64) target=linux-arm64 ;;
     *) die 'No prebuilt binary for this system. See docs/install.md; no source build was attempted.' ;;
   esac
   if [[ "$version" == latest ]]; then
@@ -40,8 +41,9 @@ main() {
     [[ "$url" == "$repo/releases/tag/"* ]] || die 'Unexpected latest-release URL.'
     version=${url##*/}
   fi
-  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] ||
-    die 'Version must look like v0.2.0 or v0.2.0-rc.1.'
+  [[ ${#version} -le 128 && "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] ||
+    die 'Version must look like v0.3.0 or v0.3.0-rc.1.'
+  case "$version" in v0.[012].*) die 'No Go release selected. Historical v0.2.0 is Rust; build the current Go source or select a published Go tag.' ;; esac
   asset="filewise-$target.tar.gz"
   url="$repo/releases/download/$version"
   [[ ! -L "$install_dir/filewise" ]] || die 'Refusing to replace a symlink; use a different FILEWISE_INSTALL_DIR.'
@@ -69,8 +71,8 @@ main() {
   tar -xOzf "$work/$asset" filewise > "$work/filewise"
   chmod 755 "$work/filewise"
   reported=$("$work/filewise" --version) ||
-    die 'Binary cannot run here. Requires macOS 13+ or Linux glibc 2.35+. See docs/install.md.'
-  [[ "$reported" == "filewise ${version#v}" ]] || die 'Binary version does not match the release.'
+    die 'Binary cannot run here. Check the Go release platform requirements in docs/install.md.'
+  [[ "$reported" == "filewise ${version#v} (Go)" ]] || die 'Binary version does not match the release.'
   [[ ! -L "$install_dir/filewise" && ! -d "$install_dir/filewise" ]] || die 'Installation target changed; refusing replacement.'
   mv -f "$work/filewise" "$install_dir/filewise"
   printf '\nInstalled %s at %s/filewise\n' "$reported" "$install_dir"

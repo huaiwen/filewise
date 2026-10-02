@@ -1,26 +1,33 @@
-name: Rust checks
+name: Go checks
 on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  native:
+  go:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
         with:
-          toolchain: '1.86.0'
-          components: rustfmt, clippy
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+          go-version: '1.27.1'
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node rust/ui/i18n.test.cjs
-      - run: cargo build --locked --release
-      - run: bash tests/install.sh "$PWD/target/release/filewise"
-      - run: cargo package --locked
+      - run: go mod verify
+      - run: make check
+      - run: make build
+      - run: build/filewise --version
+      - run: FILEWISE_TEST_BINARY="$PWD/build/filewise" npm test
+      - run: bash tests/install.sh "$PWD/build/filewise"
+      - name: Cross-build without C or other language runtimes
+        shell: bash
+        run: |
+          for os in darwin linux; do
+            for arch in arm64 amd64; do
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -o "build/filewise-$os-$arch" ./cmd/filewise
+            done
+          done

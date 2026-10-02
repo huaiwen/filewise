@@ -7,8 +7,8 @@
 
 <p align="center">
   <a href="https://github.com/huaiwen/filewise/releases/latest"><img src="https://img.shields.io/github/v/release/huaiwen/filewise?color=2563eb" alt="最新版本" /></a>
-  <a href="https://github.com/huaiwen/filewise/actions/workflows/ci.yml"><img src="https://github.com/huaiwen/filewise/actions/workflows/ci.yml/badge.svg?branch=main" alt="Rust CI" /></a>
-  <a href="#核心技术"><img src="https://img.shields.io/badge/built_with-Rust-000000?logo=rust" alt="使用 Rust 构建" /></a>
+  <a href="https://github.com/huaiwen/filewise/actions/workflows/ci.yml"><img src="https://github.com/huaiwen/filewise/actions/workflows/ci.yml/badge.svg?branch=main" alt="Go 检查" /></a>
+  <a href="#核心技术"><img src="https://img.shields.io/badge/primary-Go-00ADD8?logo=go" alt="主开发语言 Go" /></a>
   <a href="docs/install.md"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-64748b" alt="macOS 与 Linux" /></a>
 </p>
 
@@ -29,6 +29,8 @@
 
 通过浏览器管理文件夹，通过 CLI 和 HTTP API 接入 Agent。文件版本与元信息保存在本机。
 
+**运行时已迁移到 Go。** `0.3.0-dev` 提供项目存储、Agent 网关、监控工作台、文档解析、数据检查与独立发布。[实现与验证范围](docs/go-migration.md)。当前 Go 版本尚未公开发行；历史 `v0.2.0` 保持原样。
+
 ## 亮点
 
 | | 能力 | 带来的变化 |
@@ -38,7 +40,8 @@
 | 🔎 | **检索结果带出处** | 中英文关键词检索返回文件路径、版本和正文位置，方便核对引用 |
 | 🤖 | **Agent 按项目接入** | 项目专用凭据、写入基线检查与任务证据绑定 |
 | ✅ | **数据使用前先检查** | 为 JSON、CSV、XLSX 声明质量规则、数据含义与允许用途，检查缺失值、唯一性、范围和记录数量 |
-| 🦀 | **一个原生程序，本地运行** | Rust + SQLite，内置中英文工作台、CLI、HTTP 服务与文档解析 |
+| 📝 | **记录变化的含义** | Go 开发版将 Word 的前后原文、数值变化和段落依据写入 `meta.semantic_change` |
+| ⚙️ | **原生程序，本地运行** | Go + SQLite/FTS5，中英文工作台、CLI 与 HTTP 服务；普通构建关闭 CGO |
 
 <details>
 <summary><strong>使用场景</strong></summary>
@@ -52,24 +55,20 @@
 
 ## 快速开始
 
-### 1. 安装并启动
+### 1. 构建并启动
+
+在当前源码目录，使用 Go 1.27+：
 
 ```bash
-curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-filewise start
+make build
+./build/filewise start
 ```
 
-安装目录：`~/.local/bin`。安装器自动匹配系统与架构并校验 SHA-256，启动后打开本地工作台。
+程序位于 `build/filewise`，启动后打开本地工作台。Go 使用独立状态目录，不转换旧数据库。
 
-| 系统 | 架构 | 构建基线 |
-| --- | --- | --- |
-| macOS | Apple Silicon / Intel | macOS 13+ |
-| Linux | ARM64 / x86_64 | glibc 2.35+，如 Ubuntu 22.04 |
+目标平台：macOS（Apple Silicon / Intel）、Linux（ARM64 / x86-64）。Windows 未实现；最低系统版本和其他平台需分别验证。
 
-[下载安装包](https://github.com/huaiwen/filewise/releases/latest) · [安装、升级与卸载](docs/install.md)
-
-Windows 与 Alpine/musl 暂不支持。
+[安装、升级与卸载](docs/install.md) · [历史版本](https://github.com/huaiwen/filewise/releases)。当前安装器只接受 Go 发行物，不回退到旧版。
 
 ### 2. 添加文件夹
 
@@ -84,9 +83,9 @@ Windows 与 Alpine/musl 暂不支持。
 关闭网页后，后台仍会继续监控；服务重启后保留规则和历史。
 
 ```bash
-filewise status
-filewise stop
-filewise start --no-open
+./build/filewise status
+./build/filewise stop
+./build/filewise start --no-open
 ```
 
 工作台支持简体中文与 English。macOS 可按需开启登录启动，详见[文件夹工作台指南](docs/folders.md)。
@@ -119,7 +118,11 @@ filewise start --no-open
 
 ## Agent 接入
 
-Agent 通过 HTTP 网关按项目读写文件。[配置项目与访问凭据](docs/rust.md)。
+Agent 通过 HTTP 网关按项目读写文件。[配置项目与访问凭据](docs/go.md)。
+
+**Agent Skill** 支持 Codex、Claude Code 和 Cursor。Codex 使用 `$filewise init`；Claude Code、Cursor 使用 `/filewise init`，检查项目连接后即可检索、读取和比较版本。
+
+npm 安装器尚未公开发布。[本地打包试用、平台安装与授权步骤](docs/agent-skills.md)。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -137,12 +140,11 @@ Agent 通过 HTTP 网关按项目读写文件。[配置项目与访问凭据](do
 
 | 层级 | 实现 |
 | --- | --- |
-| 原生核心与 CLI | Rust · Clap |
-| HTTP 服务与后台任务 | Axum · Tokio |
-| 版本、元信息与审计 | 内嵌 SQLite |
-| 检索 | 精确匹配 · SQLite FTS5 / BM25 |
-| 文档解析 | 原生 Rust PDF / OOXML 解析，使用资源受限的子进程 |
-| 浏览器工作台 | 内嵌 HTML / CSS / JavaScript，支持中英文 |
+| 原生程序 | Go · `cmd/filewise`；普通构建关闭 CGO |
+| 文档与语义 meta | PDF / DOCX / XLSX / PPTX / UTF-8；独立提取进程、精确变化与双版本引用 |
+| 版本与权限 | SQLite、不可变原件、CAS/幂等/恢复、来源 ACL、审计与撤销 |
+| HTTP、监控与工作台 | Go `net/http`、稳定性扫描、命名/撤销、嵌入式双语 HTML / CSS / JS |
+| 检索、质量、任务与发布 | FTS5 / BM25、完整表格检查、证据绑定任务、独立审核发布 |
 
 ## 数据与访问边界
 
@@ -161,21 +163,25 @@ Agent 通过 HTTP 网关按项目读写文件。[配置项目与访问凭据](do
 
 | 文档 | 内容 |
 | --- | --- |
+| [Go 迁移记录](docs/go-migration.md) | 语义 meta、独立状态、功能对齐与验证范围 |
 | [安装与升级](docs/install.md) | 系统要求、指定版本、手动下载、升级与卸载；中英双语 |
 | [文件夹工作台](docs/folders.md) | 监控、命名、语言、处理状态与后台运行；中英双语 |
-| [CLI 与 Agent](docs/rust.md) | 项目接入、文件操作、版本、检索、质量规则和权限 |
+| [CLI 与 Agent](docs/go.md) | 项目接入、文件操作、版本、检索、质量规则和权限 |
+| [Agent Skills](docs/agent-skills.md) | npm 安装器、Codex / Claude Code / Cursor 接入与授权 |
 | [版本发布](https://github.com/huaiwen/filewise/releases) | 安装包与版本说明 |
-| [历史原型](README-python-reference.md) | 保留的早期参考实现，与当前 Rust 运行时分开 |
+| [历史原型](README-python-reference.md) | 保留的早期 Python 参考实现 |
 
 ## 开发与反馈
 
-环境：Rust 1.86+、C 编译工具链；界面语言检查使用 Node.js 22。
+Go 1.27+；race 检查另需 C 编译工具链。官网与安装器检查使用 Node.js 22+。运行、构建、CI 和 Docker 均不依赖 Rust。
+
+官网源码：`site/`。本地预览：`npm run site`；安装器与官网测试：`npm test`。
 
 ```bash
 git clone https://github.com/huaiwen/filewise.git
 cd filewise
-cargo build --locked --release
-cargo test --locked
+make build
+make check
 ```
 
-[开发指南](docs/install.md#开发者从源码构建) · [Issues](https://github.com/huaiwen/filewise/issues) · [Pull Requests](https://github.com/huaiwen/filewise/pulls)
+[Go 使用指南](docs/go.md) · [源码构建](docs/install.md#开发者从源码构建) · [Issues](https://github.com/huaiwen/filewise/issues) · [Pull Requests](https://github.com/huaiwen/filewise/pulls)

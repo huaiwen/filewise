@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 repo=$(cd "$(dirname "$0")/.." && pwd)
-version=$(awk -F '"' '/^version = / { print $2; exit }' "$repo/Cargo.toml")
+version=$(awk -F '"' '/^const version = / { print $2; exit }' "$repo/cmd/filewise/main.go")
 work=$(mktemp -d "${TMPDIR:-/tmp}/filewise-installer-test.XXXXXX")
 service_binary=''
 cleanup() {
@@ -23,7 +23,7 @@ export PATH="$work/stubs:$PATH"
 if [[ $# == 1 ]]; then
   cp "$1" "$work/payload/filewise"
 else
-  printf '#!/bin/sh\nprintf "filewise %s\\n"\n' "$version" > "$work/payload/filewise"
+  printf '#!/bin/sh\nprintf "filewise %s (Go)\\n"\n' "$version" > "$work/payload/filewise"
 fi
 chmod 755 "$work/payload/filewise"
 cat > "$work/stubs/uname" <<'STUB'
@@ -55,7 +55,7 @@ else
   if [[ "$FW_TEST_FAILURE" == corrupt && "$name" == *.tar.gz ]]; then printf tampered >> "$out"; fi
 fi
 STUB
-for tool in cargo rustc sudo python python3 node; do
+for tool in go cargo rustc sudo python python3 node; do
   printf '#!/bin/sh\necho forbidden >> "$FW_TEST_CALLS"\nexit 99\n' > "$work/stubs/$tool"
 done
 chmod +x "$work/stubs/"*
@@ -67,13 +67,13 @@ package() {
   tar -czf "$work/assets/$asset" -C "$work/payload" filewise
   (cd "$work/assets" && checksum "$asset") > "$work/assets/$asset.sha256"
 }
-for row in 'Darwin arm64 aarch64-apple-darwin' 'Darwin x86_64 x86_64-apple-darwin' \
-           'Linux x86_64 x86_64-unknown-linux-gnu' 'Linux aarch64 aarch64-unknown-linux-gnu'; do
+for row in 'Darwin arm64 darwin-arm64' 'Darwin x86_64 darwin-amd64' \
+           'Linux x86_64 linux-amd64' 'Linux aarch64 linux-arm64'; do
   read -r FW_TEST_OS FW_TEST_ARCH target <<< "$row"
   export FW_TEST_OS FW_TEST_ARCH
   package "$target"
   bash "$repo/install.sh" > "$work/output"
-  [[ $("$FILEWISE_INSTALL_DIR/filewise" --version) == "filewise $version" ]]
+  [[ $("$FILEWISE_INSTALL_DIR/filewise" --version) == "filewise $version (Go)" ]]
   cmp "$work/payload/filewise" "$FILEWISE_INSTALL_DIR/filewise"
   grep -F "/download/v$version/filewise-$target.tar.gz" "$FW_TEST_CALLS" >/dev/null
   echo "PASS: platform mapping and install $target (mock network/system detection)"
@@ -83,7 +83,7 @@ if [[ $# == 1 ]]; then
   service_binary="$FILEWISE_INSTALL_DIR/filewise"
   "$service_binary" --db "$work/state/filewise.db" start --no-open --port 0 > "$work/start.json"
   "$service_binary" --db "$work/state/filewise.db" status > "$work/status.json"
-  printf 'invalid PDF' | env -i "$service_binary" extract-worker pdf > "$work/worker.json"
+  printf 'invalid PDF' | env -i "$service_binary" __document_worker pdf > "$work/worker.json"
   grep -E '"status":[[:space:]]*"failed"' "$work/worker.json" >/dev/null
   "$service_binary" --db "$work/state/filewise.db" stop > "$work/stop.json"
   grep -E '"stopped":[[:space:]]*true' "$work/stop.json" >/dev/null
@@ -106,16 +106,21 @@ FW_TEST_FAILURE=network reject 'unavailable release' 'No published release'
 FW_TEST_FAILURE=redirect reject 'unexpected latest URL' 'Unexpected latest-release URL'
 FW_TEST_FAILURE=checksum reject 'missing checksum' 'Checksum download failed'
 FW_TEST_FAILURE=corrupt reject 'corrupted download' 'SHA-256 mismatch'
-reject 'invalid version' 'Version must look like' 'v0.2.0/../../other'
+reject 'invalid version' 'Version must look like' 'v0.3.0/../../other'
+FW_TEST_VERSION=0.2.0 reject 'historical Rust release' 'No Go release selected'
+! grep -F '/download/v0.2.0/' "$FW_TEST_CALLS"
 FW_TEST_OS=Windows_NT reject 'unsupported OS' 'No prebuilt binary'
 asset="filewise-$target.tar.gz"
 printf extra > "$work/payload/extra"
 tar -czf "$work/assets/$asset" -C "$work/payload" filewise extra
 (cd "$work/assets" && checksum "$asset") > "$work/assets/$asset.sha256"
 reject 'unexpected archive entry' 'Unexpected archive contents'
-printf '#!/bin/sh\necho filewise 999.0.0\n' > "$work/payload/filewise"
+printf '#!/bin/sh\necho "filewise 999.0.0 (Go)"\n' > "$work/payload/filewise"
 package "$target"
 reject 'wrong binary version' 'Binary version does not match'
+printf '#!/bin/sh\nprintf "filewise %s\\n"\n' "$version" > "$work/payload/filewise"
+package "$target"
+reject 'non-Go binary' 'Binary version does not match'
 printf '#!/bin/sh\nexit 1\n' > "$work/payload/filewise"
 package "$target"
 reject 'unrunnable binary' 'Binary cannot run here'

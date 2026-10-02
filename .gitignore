@@ -1,5 +1,8 @@
 /target/
+/node_modules/
+/filewise-*.tgz
 .filewise-rust/
+.filewise-go/
 .venv/
 .filewise/
 __pycache__/

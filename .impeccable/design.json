@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-01T09:09:50.186Z",
+  "title": "Design System: Filewise website",
+  "extensions": {
+    "shadows": [
+      {"name": "document", "value": "0 12px 30px #00000007", "purpose": "Lift the active example document slightly above its prior version."},
+      {"name": "selected-segment", "value": "0 2px 6px #00000010", "purpose": "Separate the selected demonstration tab from the neutral rail."}
+    ],
+    "motion": [
+      {"name": "panel-settle", "value": "180ms cubic-bezier(.16, 1, .3, 1)", "purpose": "Settle an already-visible demonstration panel; disabled for reduced motion."}
+    ],
+    "breakpoints": [
+      {"name": "compact-desktop", "value": "1100px"},
+      {"name": "stacked", "value": "820px"},
+      {"name": "phone", "value": "450px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Installation action", "kind": "button", "refersTo": "button-primary",
+      "description": "The primary black action.",
+      "html": "<button class=\"ds-primary\">Install Filewise</button>",
+      "css": ".ds-primary{font:500 14px sans-serif;min-height:46px;padding:11px 22px;border:1px solid var(--ink,#171717);border-radius:3px;background:var(--ink,#171717);color:white;cursor:pointer}.ds-primary:hover{background:#383838}.ds-primary:focus-visible{outline:2px solid var(--green,#236949);outline-offset:5px}"
+    },
+    {
+      "name": "Secondary action", "kind": "button",
+      "description": "An outlined link-style action for binary downloads.",
+      "html": "<button class=\"ds-secondary\">Download binaries</button>",
+      "css": ".ds-secondary{font:500 14px sans-serif;min-height:46px;padding:11px 22px;border:1px solid var(--ink,#171717);border-radius:3px;background:transparent;color:var(--ink,#171717);cursor:pointer}.ds-secondary:hover{background:var(--wash,#efefef)}.ds-secondary:focus-visible{outline:2px solid var(--green,#236949);outline-offset:5px}"
+    },
+    {
+      "name": "Demonstration tab", "kind": "button",
+      "description": "A selected segment within the demonstration's neutral capsule.",
+      "html": "<button class=\"ds-segment\" aria-pressed=\"true\">Compare</button>",
+      "css": ".ds-segment{font:13px sans-serif;min-height:44px;padding:10px 20px;border:0;border-radius:24px;background:white;color:var(--ink,#171717);box-shadow:0 2px 6px #00000010;cursor:pointer}.ds-segment:before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green,#236949);margin:0 8px 1px 0}.ds-segment:hover{color:var(--green,#236949)}.ds-segment:focus-visible{outline:2px solid var(--green,#236949);outline-offset:5px}"
+    },
+    {
+      "name": "Document record", "kind": "custom", "refersTo": "document",
+      "description": "A Word text specimen with source-bound semantic change metadata, not a marketing feature card.",
+      "html": "<div class=\"ds-document\"><strong>acceptance.docx</strong><code>word/document.xml/paragraph:3</code></div>",
+      "css": ".ds-document{padding:18px;border:1px solid #d1d1d1;border-radius:4px;background:white;box-shadow:0 12px 30px #00000007;color:var(--ink,#171717)}.ds-document strong{display:block;font:500 12px sans-serif;margin-bottom:10px}.ds-document code{font:11px monospace;color:var(--green,#236949)}"
+    },
+    {
+      "name": "Read-only state", "kind": "chip",
+      "description": "A non-interactive permission label in an example conversation.",
+      "html": "<span class=\"ds-permission\">Read-only</span>",
+      "css": ".ds-permission{font:11px sans-serif;color:var(--green,#236949);background:var(--green-wash,#eaf3ed);padding:3px 8px;border-radius:3px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The visible version",
+    "overview": "This system applies to site/, not the local Go workbench. The owner approved a visual direction close to Impeccable's public website: a neutral field, light display typography, a substantial working example, and a clear black installation action. The previous green-card identity is retired for this surface.",
+    "keyCharacteristics": [
+      "Open whitespace around compact, information-bearing document surfaces.",
+      "Black and gray for hierarchy; green reserved for evidence, selection and additions.",
+      "Self-hosted display typography, restrained controls, no automatic demonstration cycling."
+    ],
+    "rules": [
+      {"name": "The Evidence Accent Rule", "body": "Green conveys a source or state; it does not fill decorative marketing cards.", "section": "colors"},
+      {"name": "The Readable Record Rule", "body": "Preserve readable metadata and real locators when space gets tight; wrap rather than shrinking functional text below 11px.", "section": "typography"}
+    ],
+    "dos": [
+      "Do use the document's actual content, version and locator as the visual proof.",
+      "Do preserve bilingual layout, native controls, visible focus and reduced-motion behavior.",
+      "Do keep hosted fonts, license files and the static allowlist together at deployment."
+    ],
+    "donts": [
+      "Don't reintroduce green marketing-card grids, eyebrow labels or ornamental statistics.",
+      "Don't invent testimonials, platform endorsements, online workspace behavior or a published npm package.",
+      "Don't apply this website's redesign to internal/workspace/ui/ without a separate request."
+    ]
+  }
+}

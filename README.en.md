@@ -7,8 +7,8 @@
 
 <p align="center">
   <a href="https://github.com/huaiwen/filewise/releases/latest"><img src="https://img.shields.io/github/v/release/huaiwen/filewise?color=2563eb" alt="Latest release" /></a>
-  <a href="https://github.com/huaiwen/filewise/actions/workflows/ci.yml"><img src="https://github.com/huaiwen/filewise/actions/workflows/ci.yml/badge.svg?branch=main" alt="Rust CI" /></a>
-  <a href="#core-technology"><img src="https://img.shields.io/badge/built_with-Rust-000000?logo=rust" alt="Built with Rust" /></a>
+  <a href="https://github.com/huaiwen/filewise/actions/workflows/ci.yml"><img src="https://github.com/huaiwen/filewise/actions/workflows/ci.yml/badge.svg?branch=main" alt="Go checks" /></a>
+  <a href="#core-technology"><img src="https://img.shields.io/badge/primary-Go-00ADD8?logo=go" alt="Primary development language: Go" /></a>
   <a href="docs/install.md"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-64748b" alt="macOS and Linux" /></a>
 </p>
 
@@ -29,6 +29,8 @@
 
 Manage folders in the browser and connect agents through the CLI and HTTP API. File versions and metadata are stored locally.
 
+**The runtime is now Go.** `0.3.0-dev` provides project storage, the Agent gateway, folder monitoring, the workbench, document parsing, data checks and independent publication. See [implementation and validation scope](docs/go-migration.md). This Go version is not publicly released; historical **v0.2.0** remains unchanged.
+
 ## Highlights
 
 | | Capability | What it gives you |
@@ -38,7 +40,8 @@ Manage folders in the browser and connect agents through the CLI and HTTP API. F
 | 🔎 | **Search with sources attached** | English and Chinese keyword search returns file paths, versions and content locations you can check |
 | 🤖 | **Project-scoped agent access** | Project credentials, write-baseline checks and task evidence bindings |
 | ✅ | **Check data before use** | Declare quality rules, meaning and allowed uses for JSON, CSV and XLSX; check missing values, uniqueness, ranges and record counts |
-| 🦀 | **One native program, running locally** | Rust + SQLite with a bilingual workspace, CLI, HTTP service and document parsing |
+| 📝 | **Record what a change means** | The Go development build stores Word quotations, quantity changes and paragraph evidence in `meta.semantic_change` |
+| ⚙️ | **Native programs, running locally** | Go + SQLite/FTS5 with a bilingual workspace, CLI and HTTP service; normal builds disable CGO |
 
 <details>
 <summary><strong>Use cases</strong></summary>
@@ -52,24 +55,20 @@ Manage folders in the browser and connect agents through the CLI and HTTP API. F
 
 ## Quick Start
 
-### 1. Install and start
+### 1. Build and start
+
+From the current checkout, with Go 1.27+:
 
 ```bash
-curl -fsSL https://github.com/huaiwen/filewise/releases/latest/download/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-filewise start
+make build
+./build/filewise start
 ```
 
-Install location: `~/.local/bin`. The installer selects the OS and architecture, verifies SHA-256, and installs the binary. Starting Filewise opens the local workspace.
+The executable stays at `build/filewise` and opens the local workspace. Go uses separate state and does not convert legacy databases.
 
-| System | Architecture | Build baseline |
-| --- | --- | --- |
-| macOS | Apple Silicon / Intel | macOS 13+ |
-| Linux | ARM64 / x86_64 | glibc 2.35+, such as Ubuntu 22.04 |
+Targets: macOS (Apple Silicon / Intel), Linux (ARM64 / x86-64). Windows is not implemented; minimum-OS and other-platform execution need separate verification.
 
-[Download binaries](https://github.com/huaiwen/filewise/releases/latest) · [Install, upgrade and uninstall](docs/install.md)
-
-Windows and Alpine/musl are not currently supported.
+[Install, upgrade and uninstall](docs/install.md) · [Historical releases](https://github.com/huaiwen/filewise/releases). The current installer accepts Go releases only, without legacy fallback.
 
 ### 2. Add a folder
 
@@ -84,9 +83,9 @@ Automatic renaming changes filenames in the original directory, with conflict ch
 Monitoring continues after you close the browser. Rules and history survive service restarts.
 
 ```bash
-filewise status
-filewise stop
-filewise start --no-open
+./build/filewise status
+./build/filewise stop
+./build/filewise start --no-open
 ```
 
 The workspace supports English and Simplified Chinese. macOS login startup is opt-in; see the [folder workspace guide](docs/folders.md).
@@ -119,7 +118,11 @@ Original content and metadata are saved with captured versions. Incomplete extra
 
 ## Agent Access
 
-Agents read and write files through the HTTP gateway with project-scoped access. [Configure projects and credentials](docs/rust.md).
+Agents read and write files through the HTTP gateway with project-scoped access. [Configure projects and credentials](docs/go.md).
+
+The **Agent Skill** supports Codex, Claude Code and Cursor. Use `$filewise init` in Codex or `/filewise init` in Claude Code/Cursor to check the project connection, then search, read and compare versions.
+
+The npm installer is not published yet. [Local package testing, platform installation and authorization](docs/agent-skills.md).
 
 | Command | Purpose |
 | --- | --- |
@@ -137,12 +140,11 @@ Writes validate baseline versions, original-file state, permissions and request 
 
 | Layer | Implementation |
 | --- | --- |
-| Native core and CLI | Rust · Clap |
-| HTTP service and background work | Axum · Tokio |
-| Versions, metadata and audit | Embedded SQLite |
-| Retrieval | Exact matching · SQLite FTS5 / BM25 |
-| Document parsing | Native Rust PDF / OOXML parsers in a resource-limited child process |
-| Browser workspace | Embedded HTML / CSS / JavaScript with English and Chinese support |
+| Native executable | Go · `cmd/filewise`; normal builds disable CGO |
+| Documents and semantic meta | PDF / DOCX / XLSX / PPTX / UTF-8; extraction workers, exact changes and before/after quotations |
+| Versions and permissions | SQLite, immutable originals, CAS/idempotency/recovery, source ACLs, audit and revocation |
+| HTTP, monitoring and workspace | Go `net/http`, stability scanning, naming/undo and embedded bilingual HTML / CSS / JS |
+| Retrieval, quality, tasks and publication | FTS5 / BM25, full-table checks, evidence-bound tasks and independent review/publication |
 
 ## Data and Access Boundaries
 
@@ -161,21 +163,25 @@ Writes validate baseline versions, original-file state, permissions and request 
 
 | Guide | Contents |
 | --- | --- |
+| [Go migration record](docs/go-migration.md) | Semantic meta, separate state, functional coverage and validation scope |
 | [Installation and upgrades](docs/install.md) | Requirements, pinned versions, manual downloads, upgrades and uninstalling; English and Chinese |
 | [Folder workspace](docs/folders.md) | Monitoring, naming, language, processing status and background operation; English and Chinese |
-| [CLI and Agent](docs/rust.md) | Projects, file operations, versions, retrieval, quality rules and permissions; currently in Chinese |
+| [CLI and Agent](docs/go.md) | Projects, file operations, versions, retrieval, quality rules and permissions; currently in Chinese |
+| [Agent Skills](docs/agent-skills.md) | npm installer, Codex / Claude Code / Cursor setup and authorization |
 | [Releases](https://github.com/huaiwen/filewise/releases) | Binaries and release notes |
-| [Historical prototype](README-python-reference.md) | An earlier reference implementation, separate from the current Rust runtime |
+| [Historical prototype](README-python-reference.md) | The earlier Python reference implementation |
 
 ## Development and Feedback
 
-Requirements: Rust 1.86+, a C toolchain, and Node.js 22 for UI language checks.
+Go 1.27+; race-detector checks also require a C toolchain. Website and installer checks use Node.js 22+. Runtime, builds, CI and Docker do not depend on Rust.
+
+Website source: `site/`. Local preview: `npm run site`; installer and website tests: `npm test`.
 
 ```bash
 git clone https://github.com/huaiwen/filewise.git
 cd filewise
-cargo build --locked --release
-cargo test --locked
+make build
+make check
 ```
 
-[Developer guide](docs/install.md#developers-build-from-source) · [Issues](https://github.com/huaiwen/filewise/issues) · [Pull Requests](https://github.com/huaiwen/filewise/pulls)
+[Go usage guide](docs/go.md) · [Source build](docs/install.md#developers-build-from-source) · [Issues](https://github.com/huaiwen/filewise/issues) · [Pull Requests](https://github.com/huaiwen/filewise/pulls)

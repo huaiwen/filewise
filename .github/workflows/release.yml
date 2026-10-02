@@ -1,4 +1,4 @@
-name: Native binaries
+name: Go native binaries
 on:
   push:
     tags: ['v*']
@@ -14,19 +14,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-    runs-on: ${{ matrix.os }}
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-22.04-arm
+            goos: linux
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
-    env:
-      MACOSX_DEPLOYMENT_TARGET: '13.0'
-      TARGET: ${{ matrix.target }}
     defaults:
       run:
         shell: bash
@@ -34,42 +35,50 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
         with:
-          toolchain: '1.86.0'
-          components: rustfmt, clippy
+          go-version: '1.27.1'
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Verify native target and release version
+      - name: Verify native target
+        env:
+          EXPECT_OS: ${{ matrix.goos }}
+          EXPECT_ARCH: ${{ matrix.goarch }}
         run: |
-          test "$(rustc -vV | awk '/^host:/ {print $2}')" = "$TARGET"
-          version=$(awk -F '"' '/^version = / {print $2; exit}' Cargo.toml)
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = "v$version"
-          fi
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --release
-      - run: node rust/ui/i18n.test.cjs
-      - name: Test installer with the real native binary and offline download fixtures
-        run: bash tests/install.sh "$PWD/target/release/filewise"
-      - name: Package binary and checksum
+          test "$(go env GOOS)" = "$EXPECT_OS"
+          test "$(go env GOARCH)" = "$EXPECT_ARCH"
+          go mod verify
+      - run: make check
+      - run: make build
+      - name: Verify release identity
+        run: |
+          version=$(build/filewise --version | awk '{print $2}')
+          test "$(build/filewise --version)" = "filewise $version (Go)"
+          test "$(node -p 'require("./package.json").filewise.nativeVersion')" = "v$version"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+      - run: FILEWISE_TEST_BINARY="$PWD/build/filewise" npm test
+      - name: Test real binary installation with offline download fixtures
+        run: bash tests/install.sh "$PWD/build/filewise"
+      - name: Package Go binary and checksum
+        env:
+          TARGET: ${{ matrix.goos }}-${{ matrix.goarch }}
         run: |
           mkdir release
           asset="filewise-$TARGET.tar.gz"
-          tar -czf "release/$asset" -C target/release filewise
+          tar -czf "release/$asset" -C build filewise
           cd release
           shasum -a 256 "$asset" > "$asset.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: filewise-${{ matrix.target }}
+          name: filewise-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            release/filewise-${{ matrix.target }}.tar.gz
-            release/filewise-${{ matrix.target }}.tar.gz.sha256
+            release/filewise-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+            release/filewise-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
           if-no-files-found: error
   publish:
-    # Branch/manual builds produce artifacts only. A matching version tag opts into publication.
+    # A separately authorized, matching new tag opts into publication. Existing tags/assets are immutable.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'huaiwen/filewise'
     needs: build
     runs-on: ubuntu-22.04
@@ -85,7 +94,7 @@ jobs:
           pattern: filewise-*
           path: release
           merge-multiple: true
-      - name: Publish only after all four native builds and installer tests pass
+      - name: Publish after all four native builds and installation gates
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -94,10 +103,9 @@ jobs:
           (cd release && sha256sum --check ./*.sha256)
           cp install.sh release/install.sh
           (cd release && sha256sum install.sh > install.sh.sha256)
-          # Refuse to overwrite an existing release; a failed draft stays unpublished for inspection.
           gh release create "$GITHUB_REF_NAME" release/* --verify-tag --draft \
-            --title "Filewise $GITHUB_REF_NAME" --generate-notes \
-            --notes 'Development preview. Native binaries for macOS 13+ and Linux glibc 2.35+, Intel/AMD and ARM64. Download install.sh and run bash install.sh, or see docs/install.md in this tag. No Rust, Python or Node is needed. Stop existing instances before upgrading. macOS binaries are not Apple-notarized.'
+            --title "Filewise $GITHUB_REF_NAME (Go)" --generate-notes \
+            --notes 'Go development preview for macOS/Linux, ARM64/x86-64. No compiler, Python or Node runtime required. Separate Go state: legacy databases are not converted. Stop all instances before replacement. macOS binaries are not Apple-notarized. See docs/install.md and filewise --licenses.'
           flags=(--latest)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags=(--prerelease --latest=false); fi
           gh release edit "$GITHUB_REF_NAME" --draft=false "${flags[@]}"
