@@ -1,5 +1,8 @@
 # 数据使用契约与“当时已知”视图
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 Filewise 将数据口径、质量检查和时间边界纳入版本、任务与验证。它保存观察到的文件状态，检查声明的条件；不会把“文件有历史”当成“回测没有未来信息”。
 
 ## 1. 给数据声明口径与检查

@@ -1,5 +1,8 @@
 # 在 Filewise 中找到相关内容
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 Filewise 同时负责**找到知识**和**管理知识版本与使用条件**。搜索直接使用已保存的原文片段和 metadata，结果进入同一套 read / compile / verify 流程。
 
 ## 直接搜索
