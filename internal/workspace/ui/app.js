@@ -82,7 +82,7 @@ function options() {
 }
 function formLabels() { $('#form-title').textContent=t(editing?'folder.edit':'folder.new'); $('#save-folder').textContent=t(editing?'folder.save':'folder.start'); }
 function openFolder(folder=null) {
-  editing=folder; form.reset(); $('#form-error').hidden=true; formLabels();
+  editing=folder; form.reset(); syncLanguageSelectors(); $('#form-error').hidden=true; formLabels();
   for (const name of ['name','root','includes','excludes','process_existing']) field(name).disabled=!!folder;
   $('#pick').disabled=!!folder;
   if (folder) {
@@ -126,11 +126,14 @@ function detail(j) {
   el.append(node('p',t('detail.gate'),'hint'));
   if(!$('#detail-dialog').open) $('#detail-dialog').showModal();
 }
+function syncLanguageSelectors() {
+  for(const selector of document.querySelectorAll('#language, [data-language]')) selector.value=['auto','en','zh-CN'].includes(preference)?preference:'auto';
+}
 function language() {
   i18n=FilewiseI18n.create(messages,FilewiseI18n.resolve(preference,navigator.languages));
   document.documentElement.lang=i18n.locale;
   FilewiseI18n.apply(document,i18n);
-  for(const selector of document.querySelectorAll('#language, [data-language]')) selector.value=['auto','en','zh-CN'].includes(preference)?preference:'auto';
+  syncLanguageSelectors();
   render(); formLabels(); service();
   for(const [selector,error] of errors) if(!$(selector).hidden) $(selector).textContent=errorText(error);
   if(startupSaved) $('#autostart-note').textContent=t('settings.autostart.saved');

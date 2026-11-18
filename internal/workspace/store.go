@@ -228,7 +228,7 @@ func (s *Store) Create(input M, root string, actor Actor) (M, error) {
 	}
 	root, e = filepath.EvalSymlinks(root)
 	if e != nil {
-		return nil, e
+		return nil, missingRoot(e)
 	}
 	if within(root, s.Path) {
 		return nil, fail(422, "Choose a directory separate from the private database")
@@ -1384,4 +1384,10 @@ func (s *Store) AuthAgent(project, path string, readOnly bool, actor Actor) (M, 
 		return nil, e
 	}
 	return M{"FILEWISE_TOKEN": token, "actor": a, "restart_required": true}, nil
+}
+func missingRoot(e error) error {
+	if errors.Is(e, os.ErrNotExist) {
+		return fail(422, "Folder not found; check the path")
+	}
+	return e
 }

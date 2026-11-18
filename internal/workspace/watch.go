@@ -191,7 +191,7 @@ func (s *Store) Register(input M, owner Actor) (M, error) {
 	}
 	root, e := filepath.EvalSymlinks(str(q["root"]))
 	if e != nil {
-		return nil, e
+		return nil, missingRoot(e)
 	}
 	others, e := s.stringRows("SELECT root FROM projects WHERE root IS NOT NULL")
 	if e != nil {
@@ -943,7 +943,7 @@ func (s *Store) finishUndo(j M) error {
 	return s.saveJob(j)
 }
 func ErrorCode(message string) any {
-	exact := map[string]string{"Folder rules changed; reload before saving": "rules_changed", "Folder overlaps an existing project; register a separate folder": "overlap", "Choose a directory separate from the private database": "separate", "Manual metadata is preserved; automatic analysis will not refresh or replace it": "manual_metadata", "Source access or historical version is no longer available": "source_unavailable", "No extracted text; this format cannot be analyzed by the configured rules": "model_no_text", "Rename blocked by project checks; originals were not changed": "rename_blocked", "Undo conflict; preserve the current files": "undo_conflict", "Rules changed or monitoring paused; retry to use current rules": "rules_paused", "Folder paused or rules changed; retry to use current rules": "rules_paused", "Proposed name is outside the configured file scope": "scope", "File or declarations changed after analysis; retry": "original_changed", "Folder changed during capture; waiting for stability": "download", "Resume monitoring before retrying": "resume", "Document has no extractable text; OCR may be required": "document_no_text", "Folder selection cancelled or unavailable; paste the path instead": "pick", "Monitored root was replaced; pause and inspect the folder": "folder_replaced"}
+	exact := map[string]string{"Folder rules changed; reload before saving": "rules_changed", "Folder overlaps an existing project; register a separate folder": "overlap", "Choose a directory separate from the private database": "separate", "Manual metadata is preserved; automatic analysis will not refresh or replace it": "manual_metadata", "Source access or historical version is no longer available": "source_unavailable", "No extracted text; this format cannot be analyzed by the configured rules": "model_no_text", "Rename blocked by project checks; originals were not changed": "rename_blocked", "Undo conflict; preserve the current files": "undo_conflict", "Rules changed or monitoring paused; retry to use current rules": "rules_paused", "Folder paused or rules changed; retry to use current rules": "rules_paused", "Proposed name is outside the configured file scope": "scope", "File or declarations changed after analysis; retry": "original_changed", "Folder changed during capture; waiting for stability": "download", "Resume monitoring before retrying": "resume", "Document has no extractable text; OCR may be required": "document_no_text", "Folder selection cancelled or unavailable; paste the path instead": "pick", "Monitored root was replaced; pause and inspect the folder": "folder_replaced", "Folder not found; check the path": "folder_missing"}
 	if code, ok := exact[message]; ok {
 		return code
 	}
