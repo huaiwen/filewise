@@ -1,5 +1,8 @@
 # REST API
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 启动：`filewise --db .filewise/demo.db serve --tokens .filewise/tokens.json`。默认地址 `http://127.0.0.1:8000`。
 
 所有业务请求使用 `Authorization: Bearer TOKEN`，JSON 请求另设 `Content-Type: application/json`。`GET /api/openapi.json` 返回实际输入模式；HTML Swagger 页未启用，以避免依赖外部 CDN。

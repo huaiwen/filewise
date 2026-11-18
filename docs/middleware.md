@@ -1,5 +1,8 @@
 # Filewise 文件中间件
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 本文介绍可选的保存后观察、原生工具审核副本与人工写回。Agent 直接调用 Filewise 完成读写和知识计算的主路径见 [Agent 原生接口](agent.md)，不依赖这里的监听器或钩子。
 
 ## 最短使用路径

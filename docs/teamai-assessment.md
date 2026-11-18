@@ -1,5 +1,8 @@
 # TeamAI 与 Filewise 的关系
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 结论：**TeamAI 归入 Filewise 的 Agent 接入与团队知识协作层**。它提供团队经验、配置和知识图谱的生产与分发方式；Filewise 管理这些输入对应哪些真实文件、哪个版本、什么证据，以及是否可用于当前任务。
 
 本次静态评估固定于 [Tencent/teamai-cli 提交 24260bd](https://github.com/Tencent/teamai-cli/tree/24260bd5f7039a0dbd8b82577667b78b744a5529)，包版本 0.22.0，MIT 许可。未安装或执行上游代码，没有复制上游实现，也没有上传本地项目资料。[package.json](https://github.com/Tencent/teamai-cli/blob/24260bd5f7039a0dbd8b82577667b78b744a5529/package.json) · [LICENSE](https://github.com/Tencent/teamai-cli/blob/24260bd5f7039a0dbd8b82577667b78b744a5529/LICENSE)

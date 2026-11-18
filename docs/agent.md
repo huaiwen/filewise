@@ -1,5 +1,8 @@
 # Agent 直接使用 Filewise
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 主路径是 **Agent 调用 Filewise 读、写、计算知识**。`filewise agent write` 由服务端保存原文件与版本、记录 metadata 并计算检查结果，不需要先改原文件，也不需要 watcher 或原生钩子。
 
 普通工作保存与生产发布分开：可以保存尚未通过业务检查的工作版本，继续修复；生产使用仍须独立审核和发布。需要“检查通过才保存”时传 `--require-pass`。

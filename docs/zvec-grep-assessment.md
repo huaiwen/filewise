@@ -1,5 +1,8 @@
 # zvec-grep 与 Filewise：定位比较与接入决策
 
+> 本页描述早期 **Python 原型**，不是当前 Go 运行时的行为；当前用法见 [Go CLI 与 Agent 指南](go.md)、[文件夹监控](folders.md)和 [Go 迁移记录](go-migration.md)。
+> This page documents the earlier **Python prototype**, not the current Go runtime; see the [Go guide](go.md) and [migration record](go-migration.md).
+
 ## 当前实现更新
 
 Filewise 已将相关内容发现纳入自身核心流程：精确匹配 + SQLite FTS5/BM25 + 可选本地 FastEmbed 多语言向量 + RRF，并连接 Agent CLI、工作台和 search-driven compile。复用现有文档解析与不可变来源，无需再引入 Node 检索层。**没有安装 zvec 或 zvec-grep**；下面保留早期固定提交评估，原“留作可选检索层”不代表当前 Filewise 缺少检索功能。详见[现有检索实现](retrieval.md)。
