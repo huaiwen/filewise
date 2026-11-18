@@ -200,3 +200,14 @@ func TestLocalHTTPBoundaryAndEmbeddedUI(t *testing.T) {
 	code, _, _ = call("POST", "/api/local/stop", "127.0.0.1:8733", "", token)
 	assert(t, code == 200 && ctx.Err() != nil, "stop did not signal")
 }
+func TestRegisterMissingFolderIsClientError(t *testing.T) {
+	dir, e := filepath.EvalSymlinks(t.TempDir())
+	require(t, e)
+	s, e := Open(filepath.Join(dir, "private", "state.db"))
+	require(t, e)
+	t.Cleanup(func() { s.Close() })
+	_, e = s.Register(M{"root": filepath.Join(dir, "missing"), "name": "Missing"}, editor)
+	if e == nil || Status(e) != 422 || ErrorCode(e.Error()) != "folder_missing" {
+		t.Fatalf("missing folder: status %d, error %v", Status(e), e)
+	}
+}

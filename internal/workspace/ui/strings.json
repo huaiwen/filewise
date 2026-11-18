@@ -162,6 +162,7 @@
     "error.resume": "Resume monitoring before retrying.",
     "error.pick": "Folder selection was cancelled or unavailable. Paste the path instead.",
     "error.folder_replaced": "The monitored root was replaced. Pause and inspect the folder.",
+    "error.folder_missing": "This folder was not found. Check the path and try again.",
     "error.model_unavailable": "The local model is unavailable. Check the service and installed model.",
     "error.json_field": "A configured JSON field is missing, or the format does not support JSON fields.",
     "error.details": "Technical details: {message}"
@@ -329,6 +330,7 @@
     "error.resume": "请先恢复监控，再重新处理。",
     "error.pick": "文件夹选择已取消或不可用，也可以直接粘贴路径。",
     "error.folder_replaced": "监控根目录已被替换，请暂停并检查文件夹。",
+    "error.folder_missing": "找不到此文件夹，请检查路径后重试。",
     "error.model_unavailable": "本机模型不可用，请检查服务和已安装的模型。",
     "error.json_field": "指定的 JSON 字段缺失，或当前文件格式不支持提取 JSON 字段。",
     "error.details": "技术详情：{message}"
